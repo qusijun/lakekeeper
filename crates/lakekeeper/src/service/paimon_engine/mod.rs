@@ -3,8 +3,13 @@ use std::fmt;
 use async_trait::async_trait;
 
 mod default;
+mod native;
 mod unavailable;
 pub use default::{DefaultPaimonEngine, DynPaimonEngine, new_default_paimon_engine};
+pub use native::{
+    NativePaimonEngineBackend, native_backend_error, native_default_paimon_engine,
+    native_paimon_engine,
+};
 pub use unavailable::{
     UnavailablePaimonEngine, UnavailablePaimonEngineBackend, unavailable_default_paimon_engine,
     unavailable_paimon_engine,
@@ -170,6 +175,15 @@ pub trait PaimonEngine: Send + Sync {
     ) -> Result<(), PaimonEngineError>;
 }
 
+#[must_use]
+pub fn default_paimon_engine() -> DynPaimonEngine {
+    if cfg!(feature = "paimon-engine") {
+        native_paimon_engine()
+    } else {
+        unavailable_paimon_engine()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Arc};
@@ -186,7 +200,8 @@ mod tests {
         LoadPaimonEngineTableRequest, LoadedPaimonEngineTable, PaimonEngine, PaimonEngineError,
         PaimonEngineField, PaimonEnginePrimitiveType, PaimonEngineSchema, PaimonEngineType,
         PaimonPublishFailureClass, PreparePaimonCommitRequest, PreparedPaimonCommit,
-        PublishPaimonCommitRequest, PublishedPaimonCommit, unavailable_paimon_engine,
+        PublishPaimonCommitRequest, PublishedPaimonCommit, default_paimon_engine,
+        native_backend_error, unavailable_paimon_engine,
     };
     use crate::service::{
         Location, LogicalField, LogicalPrimitiveType, LogicalSchema, LogicalType, TableId,
@@ -625,5 +640,29 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, PaimonEngineError::EngineUnavailable { .. }));
+    }
+
+    #[tokio::test]
+    async fn default_engine_factory_uses_current_feature_set() {
+        let engine = default_paimon_engine();
+        let err = engine
+            .load_table(LoadPaimonEngineTableRequest {
+                warehouse_id: WarehouseId::new_random(),
+                table_location: sample_table_location(),
+                metadata_location: None,
+            })
+            .await
+            .unwrap_err();
+
+        if cfg!(feature = "paimon-engine") {
+            assert_eq!(err, native_backend_error());
+        } else {
+            assert!(matches!(err, PaimonEngineError::EngineUnavailable { .. }));
+            assert_eq!(
+                err.to_string(),
+                PaimonEngineError::engine_unavailable("paimon-rust integration is not configured")
+                    .to_string()
+            );
+        }
     }
 }
