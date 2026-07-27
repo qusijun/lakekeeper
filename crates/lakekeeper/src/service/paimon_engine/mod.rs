@@ -4,8 +4,11 @@ use async_trait::async_trait;
 
 mod default;
 mod unavailable;
-pub use default::DefaultPaimonEngine;
-pub use unavailable::UnavailablePaimonEngine;
+pub use default::{DefaultPaimonEngine, DynPaimonEngine, new_default_paimon_engine};
+pub use unavailable::{
+    UnavailablePaimonEngine, UnavailablePaimonEngineBackend, unavailable_default_paimon_engine,
+    unavailable_paimon_engine,
+};
 
 pub mod adapters;
 mod types;
@@ -183,7 +186,7 @@ mod tests {
         LoadPaimonEngineTableRequest, LoadedPaimonEngineTable, PaimonEngine, PaimonEngineError,
         PaimonEngineField, PaimonEnginePrimitiveType, PaimonEngineSchema, PaimonEngineType,
         PaimonPublishFailureClass, PreparePaimonCommitRequest, PreparedPaimonCommit,
-        PublishPaimonCommitRequest, PublishedPaimonCommit,
+        PublishPaimonCommitRequest, PublishedPaimonCommit, unavailable_paimon_engine,
     };
     use crate::service::{
         Location, LogicalField, LogicalPrimitiveType, LogicalSchema, LogicalType, TableId,
@@ -607,5 +610,20 @@ mod tests {
             cleanup_requests[0].staged_metadata_location,
             staged_metadata_location
         );
+    }
+
+    #[tokio::test]
+    async fn unavailable_engine_factory_returns_dyn_engine() {
+        let engine = unavailable_paimon_engine();
+        let err = engine
+            .load_table(LoadPaimonEngineTableRequest {
+                warehouse_id: WarehouseId::new_random(),
+                table_location: sample_table_location(),
+                metadata_location: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, PaimonEngineError::EngineUnavailable { .. }));
     }
 }

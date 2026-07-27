@@ -20,6 +20,8 @@ use crate::service::{
     },
 };
 
+pub type DynPaimonEngine = Arc<dyn PaimonEngine>;
+
 #[derive(Debug, Clone)]
 pub struct DefaultPaimonEngine<B> {
     backend: Arc<B>,
@@ -30,6 +32,13 @@ impl<B> DefaultPaimonEngine<B> {
     pub fn new(backend: Arc<B>) -> Self {
         Self { backend }
     }
+}
+
+pub fn new_default_paimon_engine<B>(backend: Arc<B>) -> DynPaimonEngine
+where
+    B: PaimonEngineBackend + 'static,
+{
+    Arc::new(DefaultPaimonEngine::new(backend))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
