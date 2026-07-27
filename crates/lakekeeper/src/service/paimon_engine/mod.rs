@@ -173,15 +173,21 @@ mod tests {
 
     use async_trait::async_trait;
     use iceberg::NamespaceIdent;
+    use serde_json::json;
     use tokio::sync::Mutex;
+    use uuid::Uuid;
 
     use super::{
-        DefaultPaimonEngine, InitializePaimonTableRequest, InitializedPaimonTable, PaimonEngine,
-        PaimonEngineError, PaimonEngineField, PaimonEnginePrimitiveType, PaimonEngineSchema,
-        PaimonEngineType, PaimonPublishFailureClass, PublishedPaimonCommit,
+        AlterPaimonEngineTableRequest, AlteredPaimonEngineTable, CleanupStagedPaimonCommitRequest,
+        DefaultPaimonEngine, InitializePaimonTableRequest, InitializedPaimonTable,
+        LoadPaimonEngineTableRequest, LoadedPaimonEngineTable, PaimonEngine, PaimonEngineError,
+        PaimonEngineField, PaimonEnginePrimitiveType, PaimonEngineSchema, PaimonEngineType,
+        PaimonPublishFailureClass, PreparePaimonCommitRequest, PreparedPaimonCommit,
+        PublishPaimonCommitRequest, PublishedPaimonCommit,
     };
     use crate::service::{
-        LogicalField, LogicalPrimitiveType, LogicalSchema, LogicalType, WarehouseId,
+        Location, LogicalField, LogicalPrimitiveType, LogicalSchema, LogicalType, TableId,
+        WarehouseId,
         paimon_engine::default::{
             AlterPaimonEngineTableBackendRequest, CleanupStagedPaimonCommitBackendRequest,
             InitializePaimonTableBackendRequest, LoadPaimonEngineTableBackendRequest,
@@ -206,6 +212,16 @@ mod tests {
     struct RecordingBackend {
         initialize_requests: Mutex<Vec<InitializePaimonTableBackendRequest>>,
         initialize_result: Mutex<Option<Result<InitializedPaimonTable, PaimonEngineError>>>,
+        load_requests: Mutex<Vec<LoadPaimonEngineTableBackendRequest>>,
+        load_result: Mutex<Option<Result<LoadedPaimonEngineTable, PaimonEngineError>>>,
+        alter_requests: Mutex<Vec<AlterPaimonEngineTableBackendRequest>>,
+        alter_result: Mutex<Option<Result<AlteredPaimonEngineTable, PaimonEngineError>>>,
+        prepare_requests: Mutex<Vec<PreparePaimonCommitBackendRequest>>,
+        prepare_result: Mutex<Option<Result<PreparedPaimonCommit, PaimonEngineError>>>,
+        publish_requests: Mutex<Vec<PublishPaimonCommitBackendRequest>>,
+        publish_result: Mutex<Option<Result<PublishedPaimonCommit, PaimonEngineError>>>,
+        cleanup_requests: Mutex<Vec<CleanupStagedPaimonCommitBackendRequest>>,
+        cleanup_result: Mutex<Option<Result<(), PaimonEngineError>>>,
     }
 
     #[async_trait]
@@ -224,38 +240,99 @@ mod tests {
 
         async fn load_table(
             &self,
-            _request: LoadPaimonEngineTableBackendRequest,
+            request: LoadPaimonEngineTableBackendRequest,
         ) -> Result<super::LoadedPaimonEngineTable, PaimonEngineError> {
-            unimplemented!()
+            self.load_requests.lock().await.push(request);
+            self.load_result
+                .lock()
+                .await
+                .take()
+                .expect("load result must be configured")
         }
 
         async fn alter_table(
             &self,
-            _request: AlterPaimonEngineTableBackendRequest,
+            request: AlterPaimonEngineTableBackendRequest,
         ) -> Result<super::AlteredPaimonEngineTable, PaimonEngineError> {
-            unimplemented!()
+            self.alter_requests.lock().await.push(request);
+            self.alter_result
+                .lock()
+                .await
+                .take()
+                .expect("alter result must be configured")
         }
 
         async fn prepare_commit(
             &self,
-            _request: PreparePaimonCommitBackendRequest,
+            request: PreparePaimonCommitBackendRequest,
         ) -> Result<super::PreparedPaimonCommit, PaimonEngineError> {
-            unimplemented!()
+            self.prepare_requests.lock().await.push(request);
+            self.prepare_result
+                .lock()
+                .await
+                .take()
+                .expect("prepare result must be configured")
         }
 
         async fn publish_commit(
             &self,
-            _request: PublishPaimonCommitBackendRequest,
+            request: PublishPaimonCommitBackendRequest,
         ) -> Result<PublishedPaimonCommit, PaimonEngineError> {
-            unimplemented!()
+            self.publish_requests.lock().await.push(request);
+            self.publish_result
+                .lock()
+                .await
+                .take()
+                .expect("publish result must be configured")
         }
 
         async fn cleanup_staged_commit(
             &self,
-            _request: CleanupStagedPaimonCommitBackendRequest,
+            request: CleanupStagedPaimonCommitBackendRequest,
         ) -> Result<(), PaimonEngineError> {
-            unimplemented!()
+            self.cleanup_requests.lock().await.push(request);
+            self.cleanup_result
+                .lock()
+                .await
+                .take()
+                .expect("cleanup result must be configured")
         }
+    }
+
+    fn sample_logical_schema(primitive: LogicalPrimitiveType) -> LogicalSchema {
+        LogicalSchema {
+            schema_id: 7,
+            root_fields: vec![LogicalField {
+                field_id: 10,
+                name: "id".to_string(),
+                required: true,
+                doc: Some("identifier".to_string()),
+                field_type: LogicalType::Primitive(primitive),
+                initial_default: None,
+                write_default: None,
+                is_identity_hint: true,
+            }],
+        }
+    }
+
+    fn sample_engine_schema(primitive: PaimonEnginePrimitiveType) -> PaimonEngineSchema {
+        PaimonEngineSchema {
+            schema_id: 7,
+            root_fields: vec![PaimonEngineField {
+                field_id: 10,
+                name: "id".to_string(),
+                required: true,
+                doc: Some("identifier".to_string()),
+                field_type: PaimonEngineType::Primitive(primitive),
+                initial_default: None,
+                write_default: None,
+                is_primary_key: true,
+            }],
+        }
+    }
+
+    fn sample_table_location() -> Location {
+        "s3://warehouse/ns/table".parse().unwrap()
     }
 
     #[tokio::test]
@@ -264,19 +341,7 @@ mod tests {
         *backend.initialize_result.lock().await = Some(Ok(InitializedPaimonTable {
             metadata_location: Some("s3://warehouse/ns/table/metadata.json".parse().unwrap()),
             current_snapshot_id: Some(8),
-            logical_schema: LogicalSchema {
-                schema_id: 7,
-                root_fields: vec![LogicalField {
-                    field_id: 10,
-                    name: "id".to_string(),
-                    required: true,
-                    doc: Some("identifier".to_string()),
-                    field_type: LogicalType::Primitive(LogicalPrimitiveType::Long),
-                    initial_default: None,
-                    write_default: None,
-                    is_identity_hint: true,
-                }],
-            },
+            logical_schema: sample_logical_schema(LogicalPrimitiveType::Long),
             normalized_options: HashMap::from([
                 ("bucket".to_string(), "7".to_string()),
                 ("write-mode".to_string(), "change-log".to_string()),
@@ -288,20 +353,8 @@ mod tests {
             warehouse_id: WarehouseId::new_random(),
             namespace: NamespaceIdent::from_vec(vec!["sales".to_string()]).unwrap(),
             table_name: "orders".to_string(),
-            location: "s3://warehouse/ns/table".parse().unwrap(),
-            logical_schema: LogicalSchema {
-                schema_id: 7,
-                root_fields: vec![LogicalField {
-                    field_id: 10,
-                    name: "id".to_string(),
-                    required: true,
-                    doc: Some("identifier".to_string()),
-                    field_type: LogicalType::Primitive(LogicalPrimitiveType::Long),
-                    initial_default: None,
-                    write_default: None,
-                    is_identity_hint: true,
-                }],
-            },
+            location: sample_table_location(),
+            logical_schema: sample_logical_schema(LogicalPrimitiveType::Long),
             table_options: HashMap::from([
                 ("  Bucket ".to_string(), "7".to_string()),
                 ("WRITE-Mode".to_string(), "change-log".to_string()),
@@ -326,19 +379,7 @@ mod tests {
         );
         assert_eq!(
             initialize.engine_schema,
-            PaimonEngineSchema {
-                schema_id: 7,
-                root_fields: vec![PaimonEngineField {
-                    field_id: 10,
-                    name: "id".to_string(),
-                    required: true,
-                    doc: Some("identifier".to_string()),
-                    field_type: PaimonEngineType::Primitive(PaimonEnginePrimitiveType::Long),
-                    initial_default: None,
-                    write_default: None,
-                    is_primary_key: true,
-                }],
-            }
+            sample_engine_schema(PaimonEnginePrimitiveType::Long)
         );
         drop(recorded);
 
@@ -359,7 +400,7 @@ mod tests {
             warehouse_id: WarehouseId::new_random(),
             namespace: NamespaceIdent::from_vec(vec!["sales".to_string()]).unwrap(),
             table_name: "orders".to_string(),
-            location: "s3://warehouse/ns/table".parse().unwrap(),
+            location: sample_table_location(),
             logical_schema: LogicalSchema {
                 schema_id: 1,
                 root_fields: vec![LogicalField {
@@ -381,5 +422,190 @@ mod tests {
 
         let error = engine.initialize_table(request).await.unwrap_err();
         assert!(matches!(error, PaimonEngineError::UnsupportedSchema { .. }));
+    }
+
+    #[tokio::test]
+    async fn default_engine_normalizes_loaded_table_response() {
+        let backend = Arc::new(RecordingBackend::default());
+        *backend.load_result.lock().await = Some(Ok(LoadedPaimonEngineTable {
+            metadata_location: Some("s3://warehouse/ns/table/metadata-v2.json".parse().unwrap()),
+            current_snapshot_id: Some(9),
+            current_branch: "main".to_string(),
+            logical_schema: sample_logical_schema(LogicalPrimitiveType::Long),
+            normalized_options: HashMap::from([
+                (" write.mode ".to_string(), " append ".to_string()),
+                ("bucket".to_string(), " 8 ".to_string()),
+            ]),
+            primary_keys: vec!["id".to_string()],
+            partition_keys: vec!["dt".to_string()],
+            comment: Some("loaded table".to_string()),
+        }));
+
+        let engine = DefaultPaimonEngine::new(backend.clone());
+        let request = LoadPaimonEngineTableRequest {
+            warehouse_id: WarehouseId::new_random(),
+            table_location: sample_table_location(),
+            metadata_location: Some("s3://warehouse/ns/table/metadata-v1.json".parse().unwrap()),
+        };
+
+        let response = engine.load_table(request.clone()).await.unwrap();
+
+        let recorded = backend.load_requests.lock().await;
+        assert_eq!(
+            recorded.as_slice(),
+            &[LoadPaimonEngineTableBackendRequest {
+                warehouse_id: request.warehouse_id,
+                table_location: request.table_location,
+                metadata_location: request.metadata_location,
+            }]
+        );
+        drop(recorded);
+
+        assert_eq!(
+            response.logical_schema,
+            sample_logical_schema(LogicalPrimitiveType::Long)
+        );
+        assert_eq!(
+            response.normalized_options,
+            HashMap::from([
+                ("write.mode".to_string(), "append".to_string()),
+                ("bucket".to_string(), "8".to_string()),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn default_engine_translates_alter_requests_and_responses() {
+        let backend = Arc::new(RecordingBackend::default());
+        *backend.alter_result.lock().await = Some(Ok(AlteredPaimonEngineTable {
+            metadata_location: Some("s3://warehouse/ns/table/metadata-v3.json".parse().unwrap()),
+            current_snapshot_id: Some(12),
+            logical_schema: sample_logical_schema(LogicalPrimitiveType::Long),
+            normalized_options: HashMap::from([("bucket".to_string(), "9".to_string())]),
+            primary_keys: vec!["id".to_string()],
+            partition_keys: vec!["dt".to_string()],
+            comment: Some("altered".to_string()),
+        }));
+
+        let engine = DefaultPaimonEngine::new(backend.clone());
+        let request = AlterPaimonEngineTableRequest {
+            warehouse_id: WarehouseId::new_random(),
+            tabular_id: TableId::new_random(),
+            table_location: sample_table_location(),
+            metadata_location: Some("s3://warehouse/ns/table/metadata-v2.json".parse().unwrap()),
+            current_snapshot_id: Some(11),
+            logical_schema: sample_logical_schema(LogicalPrimitiveType::Long),
+            table_options: HashMap::from([(" Bucket ".to_string(), " 9 ".to_string())]),
+            primary_keys: vec!["id".to_string()],
+            partition_keys: vec!["dt".to_string()],
+            comment: Some("alter".to_string()),
+        };
+
+        let response = engine.alter_table(request.clone()).await.unwrap();
+
+        let recorded = backend.alter_requests.lock().await;
+        assert_eq!(
+            recorded.as_slice(),
+            &[AlterPaimonEngineTableBackendRequest {
+                warehouse_id: request.warehouse_id,
+                tabular_id: request.tabular_id,
+                table_location: request.table_location,
+                metadata_location: request.metadata_location,
+                current_snapshot_id: request.current_snapshot_id,
+                engine_schema: sample_engine_schema(PaimonEnginePrimitiveType::Long),
+                normalized_options: HashMap::from([("bucket".to_string(), "9".to_string())]),
+                primary_keys: vec!["id".to_string()],
+                partition_keys: vec!["dt".to_string()],
+                comment: Some("alter".to_string()),
+            }]
+        );
+        drop(recorded);
+
+        assert_eq!(response.current_snapshot_id, Some(12));
+        assert_eq!(response.normalized_options["bucket"], "9");
+    }
+
+    #[tokio::test]
+    async fn default_engine_passes_prepare_publish_and_cleanup_through() {
+        let backend = Arc::new(RecordingBackend::default());
+        let tabular_id = TableId::new_random();
+        let warehouse_id = WarehouseId::new_random();
+        let commit_token = Uuid::new_v4();
+        let staged_metadata_location = Some(
+            "s3://warehouse/ns/table/staged/metadata-v4.json"
+                .parse()
+                .unwrap(),
+        );
+
+        *backend.prepare_result.lock().await = Some(Ok(PreparedPaimonCommit {
+            commit_token,
+            staged_metadata_location: staged_metadata_location.clone(),
+            next_snapshot_id: Some(13),
+        }));
+        *backend.publish_result.lock().await = Some(Err(PaimonEngineError::publish_failed(
+            PaimonPublishFailureClass::Retriable,
+            "retry publish",
+        )));
+        *backend.cleanup_result.lock().await = Some(Ok(()));
+
+        let engine = DefaultPaimonEngine::new(backend.clone());
+        let operations = vec![json!({"kind": "append"}), json!({"kind": "compact"})];
+        let prepare = engine
+            .prepare_commit(PreparePaimonCommitRequest {
+                warehouse_id,
+                tabular_id,
+                table_location: sample_table_location(),
+                metadata_location: Some(
+                    "s3://warehouse/ns/table/metadata-v3.json".parse().unwrap(),
+                ),
+                current_snapshot_id: Some(12),
+                operations: operations.clone(),
+                expected_current_snapshot_id: Some(12),
+            })
+            .await
+            .unwrap();
+        assert_eq!(prepare.commit_token, commit_token);
+        assert_eq!(prepare.next_snapshot_id, Some(13));
+
+        let publish_error = engine
+            .publish_commit(PublishPaimonCommitRequest {
+                warehouse_id,
+                tabular_id,
+                commit_token,
+                staged_metadata_location: staged_metadata_location.clone(),
+                current_metadata_location: Some(
+                    "s3://warehouse/ns/table/metadata-v3.json".parse().unwrap(),
+                ),
+            })
+            .await
+            .unwrap_err();
+        assert!(publish_error.is_retriable());
+
+        engine
+            .cleanup_staged_commit(CleanupStagedPaimonCommitRequest {
+                warehouse_id,
+                tabular_id,
+                commit_token,
+                staged_metadata_location: staged_metadata_location.clone(),
+            })
+            .await
+            .unwrap();
+
+        let prepare_requests = backend.prepare_requests.lock().await;
+        assert_eq!(prepare_requests.len(), 1);
+        assert_eq!(prepare_requests[0].operations, operations);
+        drop(prepare_requests);
+
+        let publish_requests = backend.publish_requests.lock().await;
+        assert_eq!(publish_requests.len(), 1);
+        assert_eq!(publish_requests[0].commit_token, commit_token);
+        drop(publish_requests);
+
+        let cleanup_requests = backend.cleanup_requests.lock().await;
+        assert_eq!(cleanup_requests.len(), 1);
+        assert_eq!(
+            cleanup_requests[0].staged_metadata_location,
+            staged_metadata_location
+        );
     }
 }
