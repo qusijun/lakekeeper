@@ -982,7 +982,7 @@ impl<C: CatalogStore, A: Authorizer + Clone, S: SecretStore>
     }
 }
 
-async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
+pub(crate) async fn authorize_load_table<C: CatalogStore, A: Authorizer + Clone>(
     request_metadata: &RequestMetadata,
     table: TableIdent,
     warehouse_id: WarehouseId,

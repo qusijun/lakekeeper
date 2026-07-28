@@ -1,0 +1,447 @@
+openapi: 3.1.0
+info:
+  title: Lakekeeper Paimon Table API
+  description: Lakekeeper data-plane API for Paimon catalogs.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  version: 0.0.0
+servers:
+  - url: '{scheme}://{host}{basePath}'
+    description: Lakekeeper Paimon Table API
+    variables:
+      basePath:
+        default: ''
+        description: Optional path prefix (starting with '/') to be prepended to all routes
+      host:
+        default: localhost
+        description: The host (and optional port) for the specified server
+      scheme:
+        default: https
+        description: The scheme of the URI, either http or https
+paths:
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables:
+    get:
+      tags:
+        - paimon-table
+      summary: List Paimon tables in a namespace
+      operationId: list_paimon_tables
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: pageToken
+          in: query
+          required: false
+          schema:
+            type:
+              - string
+              - 'null'
+        - name: pageSize
+          in: query
+          required: false
+          schema:
+            type:
+              - integer
+              - 'null'
+            format: int64
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListPaimonTablesResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    post:
+      tags:
+        - paimon-table
+      summary: Create a Paimon table
+      operationId: create_paimon_table
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaimonTableRequest'
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadPaimonTableResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables/{table}:
+    get:
+      tags:
+        - paimon-table
+      summary: Load a Paimon table
+      operationId: load_paimon_table
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadPaimonTableResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+    delete:
+      tags:
+        - paimon-table
+      summary: Drop a Paimon table
+      operationId: drop_paimon_table
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Paimon table dropped successfully
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables/{table}/credentials:
+    get:
+      tags:
+        - paimon-table
+      summary: Load credentials for a Paimon table
+      operationId: load_paimon_table_credentials
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: referenced-by
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadPaimonTableCredentialsResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+  /lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables/{table}/commit-state:
+    post:
+      tags:
+        - paimon-table
+      summary: Update a Paimon table commit state
+      operationId: update_paimon_commit_state
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: table
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePaimonCommitStateRequest'
+      responses:
+        '200':
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadPaimonTableResponse'
+        4XX:
+          description: ''
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IcebergErrorResponse'
+components:
+  schemas:
+    CreatePaimonTableRequest:
+      type: object
+      required:
+        - name
+        - current-branch
+      properties:
+        name:
+          type: string
+        location:
+          type:
+            - string
+            - 'null'
+        metadata-location:
+          type:
+            - string
+            - 'null'
+        current-snapshot-id:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        current-branch:
+          type: string
+        schema: {}
+        table-options:
+          type: object
+          additionalProperties:
+            type: string
+        partition-keys:
+          type: array
+          items:
+            type: string
+        primary-keys:
+          type: array
+          items:
+            type: string
+        comment:
+          type:
+            - string
+            - 'null'
+    PaimonTableData:
+      type: object
+      required:
+        - name
+        - location
+        - protected
+        - current-branch
+        - table-options
+        - partition-keys
+        - primary-keys
+        - commit-state
+      properties:
+        name:
+          type: string
+        location:
+          type: string
+        metadata-location:
+          type:
+            - string
+            - 'null'
+        protected:
+          type: boolean
+        current-snapshot-id:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        current-branch:
+          type: string
+        schema: {}
+        table-options:
+          type: object
+          additionalProperties:
+            type: string
+        partition-keys:
+          type: array
+          items:
+            type: string
+        primary-keys:
+          type: array
+          items:
+            type: string
+        comment:
+          type:
+            - string
+            - 'null'
+        commit-state:
+          type: string
+        pending-commit-token:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        last-commit-error:
+          type:
+            - string
+            - 'null'
+    PaimonTableIdentifier:
+      type: object
+      required:
+        - namespace
+        - name
+        - commit-state
+      properties:
+        namespace:
+          type: array
+          items:
+            type: string
+        name:
+          type: string
+        id:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        commit-state:
+          type: string
+    ListPaimonTablesResponse:
+      type: object
+      required:
+        - identifiers
+      properties:
+        identifiers:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaimonTableIdentifier'
+        next-page-token:
+          type:
+            - string
+            - 'null'
+    LoadPaimonTableResponse:
+      type: object
+      required:
+        - table
+      properties:
+        table:
+          $ref: '#/components/schemas/PaimonTableData'
+        config:
+          type:
+            - object
+            - 'null'
+          additionalProperties:
+            type: string
+        storage-credentials:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/StorageCredential'
+    LoadPaimonTableCredentialsResponse:
+      type: object
+      required:
+        - storage-credentials
+      properties:
+        storage-credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/StorageCredential'
+    UpdatePaimonCommitStateRequest:
+      type: object
+      required:
+        - commit-state
+      properties:
+        commit-state:
+          type: string
+        pending-commit-token:
+          type:
+            - string
+            - 'null'
+          format: uuid
+        current-snapshot-id:
+          type:
+            - integer
+            - 'null'
+          format: int64
+        metadata-location:
+          type:
+            - string
+            - 'null'
+        last-commit-error:
+          type:
+            - string
+            - 'null'
+    StorageCredential:
+      type: object
+      required:
+        - prefix
+        - config
+      properties:
+        prefix:
+          type: string
+        config:
+          type: object
+          additionalProperties:
+            type: string
+    IcebergErrorResponse:
+      type: object
