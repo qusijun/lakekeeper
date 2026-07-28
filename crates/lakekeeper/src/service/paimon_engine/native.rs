@@ -40,6 +40,19 @@ pub struct NativePaimonCatalogBootstrap {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePaimonCatalogOptionSet {
+    pub options: HashMap<String, String>,
+    pub temp_file_options: Vec<NativePaimonTempFileOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePaimonTempFileOption {
+    pub option_key: String,
+    pub file_name_hint: String,
+    pub file_contents: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativePaimonCatalogAuth {
     None,
     S3AccessKey {
@@ -186,6 +199,90 @@ impl NativePaimonRuntimeConfig {
         };
 
         Ok(NativePaimonCatalogBootstrap { options, auth })
+    }
+
+    pub fn catalog_option_set(&self) -> Result<NativePaimonCatalogOptionSet, PaimonEngineError> {
+        let bootstrap = self.catalog_bootstrap()?;
+        let mut options = bootstrap.options;
+        let mut temp_file_options = Vec::new();
+        options.insert("metastore".to_string(), "filesystem".to_string());
+
+        match (&self.storage, bootstrap.auth) {
+            (
+                NativePaimonStorageConfig::S3(_),
+                NativePaimonCatalogAuth::S3AccessKey {
+                    access_key_id,
+                    secret_access_key,
+                },
+            ) => {
+                options.insert("s3.access-key-id".to_string(), access_key_id);
+                options.insert("s3.secret-access-key".to_string(), secret_access_key);
+            }
+            (
+                NativePaimonStorageConfig::S3(_),
+                NativePaimonCatalogAuth::S3SystemIdentity { external_id },
+            ) => {
+                if external_id.is_some() {
+                    return Err(PaimonEngineError::unsupported_options(
+                        "native Paimon bootstrap does not yet support S3 system identity with external_id",
+                    ));
+                }
+            }
+            (NativePaimonStorageConfig::S3(_), NativePaimonCatalogAuth::S3CloudflareR2 { .. }) => {
+                return Err(PaimonEngineError::unsupported_options(
+                    "native Paimon bootstrap does not yet support Cloudflare R2 credentials",
+                ));
+            }
+            (
+                NativePaimonStorageConfig::S3(_),
+                NativePaimonCatalogAuth::AliyunOssAccessKey { .. },
+            ) => {
+                return Err(PaimonEngineError::unsupported_options(
+                    "native Paimon bootstrap does not yet support Aliyun OSS credentials",
+                ));
+            }
+            (
+                NativePaimonStorageConfig::Adls(_),
+                NativePaimonCatalogAuth::AzSharedAccessKey { key },
+            ) => {
+                options.insert("azure.account-key".to_string(), key);
+            }
+            (NativePaimonStorageConfig::Adls(_), NativePaimonCatalogAuth::AzSystemIdentity) => {}
+            (
+                NativePaimonStorageConfig::Adls(_),
+                NativePaimonCatalogAuth::AzClientCredentials { .. },
+            ) => {
+                return Err(PaimonEngineError::unsupported_options(
+                    "native Paimon bootstrap does not yet support Azure client credentials",
+                ));
+            }
+            (
+                NativePaimonStorageConfig::Gcs(_),
+                NativePaimonCatalogAuth::GcsServiceAccountKey {
+                    service_account_json,
+                },
+            ) => {
+                temp_file_options.push(NativePaimonTempFileOption {
+                    option_key: "gcs.credential-path".to_string(),
+                    file_name_hint: "gcp-service-account.json".to_string(),
+                    file_contents: service_account_json,
+                });
+            }
+            (NativePaimonStorageConfig::Gcs(_), NativePaimonCatalogAuth::GcsSystemIdentity) => {}
+            #[cfg(feature = "test-utils")]
+            (NativePaimonStorageConfig::Memory(_), NativePaimonCatalogAuth::None) => {}
+            (_, NativePaimonCatalogAuth::None) => {}
+            (storage, auth) => {
+                return Err(PaimonEngineError::validation(format!(
+                    "native Paimon bootstrap auth {auth:?} is incompatible with storage config {storage:?}",
+                )));
+            }
+        }
+
+        Ok(NativePaimonCatalogOptionSet {
+            options,
+            temp_file_options,
+        })
     }
 }
 
@@ -570,6 +667,39 @@ mod tests {
     }
 
     #[test]
+    fn builds_catalog_option_set_for_s3_access_key() {
+        let warehouse_location: Location =
+            "s3://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let runtime = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::S3(s3_profile()),
+            Some(&StorageCredential::S3(S3Credential::AccessKey(
+                S3AccessKeyCredential {
+                    access_key_id: "access".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    external_id: None,
+                },
+            ))),
+        )
+        .unwrap();
+
+        let option_set = runtime.catalog_option_set().unwrap();
+        assert_eq!(
+            option_set.options.get("metastore"),
+            Some(&"filesystem".to_string())
+        );
+        assert_eq!(
+            option_set.options.get("s3.access-key-id"),
+            Some(&"access".to_string())
+        );
+        assert_eq!(
+            option_set.options.get("s3.secret-access-key"),
+            Some(&"secret".to_string())
+        );
+        assert!(option_set.temp_file_options.is_empty());
+    }
+
+    #[test]
     fn rejects_mismatched_storage_credentials() {
         let warehouse_location: Location =
             "s3://warehouse-bucket/root/warehouse-a".parse().unwrap();
@@ -678,6 +808,38 @@ mod tests {
     }
 
     #[test]
+    fn builds_catalog_option_set_for_adls_shared_access_key() {
+        let warehouse_location: Location =
+            "abfss://fs@account.dfs.core.windows.net/root/warehouse-a"
+                .parse()
+                .unwrap();
+        let runtime = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::Adls(GenericAdlsProfile {
+                filesystem: "fs".to_string(),
+                key_prefix: Some("root".to_string()),
+                account_name: "account".to_string(),
+                authority_host: None,
+                host: None,
+                sas_token_validity_seconds: None,
+                allow_alternative_protocols: false,
+                sas_enabled: true,
+                storage_layout: None,
+            }),
+            Some(&StorageCredential::Az(AzCredential::SharedAccessKey {
+                key: "account-key".to_string(),
+            })),
+        )
+        .unwrap();
+
+        let option_set = runtime.catalog_option_set().unwrap();
+        assert_eq!(
+            option_set.options.get("azure.account-key"),
+            Some(&"account-key".to_string())
+        );
+    }
+
+    #[test]
     fn builds_runtime_config_for_gcs_warehouse() {
         let warehouse_location: Location =
             "gs://warehouse-bucket/root/warehouse-a".parse().unwrap();
@@ -767,6 +929,55 @@ mod tests {
             }
             other => panic!("expected gcs service account auth, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn builds_catalog_option_set_for_gcs_service_account() {
+        let warehouse_location: Location =
+            "gs://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let runtime = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::Gcs(GcsProfile {
+                bucket: "warehouse-bucket".to_string(),
+                key_prefix: Some("root".to_string()),
+                sts_enabled: true,
+                storage_layout: None,
+            }),
+            Some(&StorageCredential::Gcs(GcsCredential::ServiceAccountKey {
+                key: GcsServiceKey {
+                    r#type: "service_account".to_string(),
+                    project_id: "project-1".to_string(),
+                    private_key_id: "pk".to_string(),
+                    private_key: "secret".to_string(),
+                    client_email: "svc@example.com".to_string(),
+                    client_id: "123".to_string(),
+                    auth_uri: "https://accounts.google.com/o/oauth2/auth".to_string(),
+                    token_uri: "https://oauth2.googleapis.com/token".to_string(),
+                    auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs"
+                        .to_string(),
+                    client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/svc"
+                        .to_string(),
+                    universe_domain: "googleapis.com".to_string(),
+                },
+            })),
+        )
+        .unwrap();
+
+        let option_set = runtime.catalog_option_set().unwrap();
+        assert_eq!(
+            option_set.options.get("metastore"),
+            Some(&"filesystem".to_string())
+        );
+        assert_eq!(option_set.temp_file_options.len(), 1);
+        assert_eq!(
+            option_set.temp_file_options[0].option_key,
+            "gcs.credential-path"
+        );
+        assert!(
+            option_set.temp_file_options[0]
+                .file_contents
+                .contains("\"project_id\":\"project-1\"")
+        );
     }
 
     #[cfg(feature = "test-utils")]
