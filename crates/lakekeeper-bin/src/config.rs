@@ -1,8 +1,17 @@
 use std::sync::LazyLock;
 
+use lakekeeper_storage_foundationdb::FoundationDbConfig;
 use serde::{Deserialize, Serialize};
 
 pub(crate) static CONFIG_BIN: LazyLock<DynAppConfig> = LazyLock::new(get_config);
+
+#[derive(Clone, Deserialize, Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CatalogBackend {
+    #[default]
+    Postgres,
+    Foundationdb,
+}
 
 #[derive(Clone, Deserialize, Serialize, Debug, Default)]
 pub(crate) struct DynAppConfig {
@@ -10,6 +19,13 @@ pub(crate) struct DynAppConfig {
     /// We do not recommend enabling this in production, especially if
     /// multiple instances of Lakekeeper are running.
     pub(crate) debug: DebugConfig,
+    pub(crate) catalog: CatalogConfig,
+    pub(crate) foundationdb: FoundationDbConfig,
+}
+
+#[derive(Clone, Deserialize, Serialize, Debug, Default)]
+pub(crate) struct CatalogConfig {
+    pub(crate) backend: CatalogBackend,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug, Default)]
@@ -77,6 +93,7 @@ mod tests {
         figment::Jail::expect_with(|_jail| {
             let config = get_config();
             assert!(!config.debug.auto_serve);
+            assert_eq!(config.catalog.backend, CatalogBackend::Postgres);
             Ok(())
         });
 
@@ -84,6 +101,31 @@ mod tests {
             jail.set_env("LAKEKEEPER_TEST__DEBUG__AUTO_SERVE", "true");
             let config = get_config();
             assert!(config.debug.auto_serve);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_catalog_backend_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env("LAKEKEEPER_TEST__CATALOG__BACKEND", "foundationdb");
+            let config = get_config();
+            assert_eq!(config.catalog.backend, CatalogBackend::Foundationdb);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_foundationdb_config_env_vars() {
+        figment::Jail::expect_with(|jail| {
+            jail.set_env(
+                "LAKEKEEPER_TEST__FOUNDATIONDB__ROOT_PREFIX",
+                "tenant-a/catalog",
+            );
+            jail.set_env("LAKEKEEPER_TEST__FOUNDATIONDB__API_VERSION", "730");
+            let config = get_config();
+            assert_eq!(config.foundationdb.root_prefix, "tenant-a/catalog");
+            assert_eq!(config.foundationdb.api_version, 730);
             Ok(())
         });
     }

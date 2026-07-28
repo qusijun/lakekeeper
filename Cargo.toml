@@ -9,6 +9,7 @@ members = [
     "crates/lakekeeper-events-nats",
     "crates/lakekeeper-integration-tests",
     "crates/lakekeeper-secrets-kv2",
+    "crates/lakekeeper-storage-foundationdb",
     "crates/lakekeeper-storage-postgres",
 ]
 resolver = "2"

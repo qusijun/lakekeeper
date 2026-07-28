@@ -6,6 +6,8 @@ use lakekeeper::{
 };
 use lakekeeper_storage_postgres::{ReadWrite, get_reader_pool, get_writer_pool};
 
+use crate::{CONFIG_BIN, config::CatalogBackend};
+
 pub(crate) async fn health(check_db: bool, check_server: bool) -> anyhow::Result<()> {
     tracing::info!("Checking health...");
     if check_db {
@@ -59,28 +61,36 @@ pub(crate) fn normalize_checks(
 }
 
 pub(crate) async fn db_health_check() -> anyhow::Result<()> {
-    use lakekeeper_storage_postgres::config::CONFIG as PG_CONFIG;
-    let _ = &*CONFIG; // ensure lakekeeper config is eager-init for parity
-    let reader = get_reader_pool(PG_CONFIG.to_pool_opts().max_connections(1))
-        .await
-        .with_context(|| "Read pool failed.")?;
-    let writer = get_writer_pool(PG_CONFIG.to_pool_opts().max_connections(1))
-        .await
-        .with_context(|| "Write pool failed.")?;
+    match CONFIG_BIN.catalog.backend {
+        CatalogBackend::Postgres => {
+            use lakekeeper_storage_postgres::config::CONFIG as PG_CONFIG;
 
-    let db = ReadWrite::from_pools(reader.clone(), writer.clone());
-    db.update_health().await;
-    db.health().await;
-    let mut db_healthy = true;
+            let _ = &*CONFIG; // ensure lakekeeper config is eager-init for parity
+            let reader = get_reader_pool(PG_CONFIG.to_pool_opts().max_connections(1))
+                .await
+                .with_context(|| "Read pool failed.")?;
+            let writer = get_writer_pool(PG_CONFIG.to_pool_opts().max_connections(1))
+                .await
+                .with_context(|| "Write pool failed.")?;
 
-    for h in db.health().await {
-        tracing::info!("{:?}", h);
-        db_healthy = db_healthy && matches!(h.status(), HealthStatus::Healthy);
-    }
-    if db_healthy {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!("Database is not healthy."))
+            let db = ReadWrite::from_pools(reader.clone(), writer.clone());
+            db.update_health().await;
+            db.health().await;
+            let mut db_healthy = true;
+
+            for h in db.health().await {
+                tracing::info!("{:?}", h);
+                db_healthy = db_healthy && matches!(h.status(), HealthStatus::Healthy);
+            }
+            if db_healthy {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("Database is not healthy."))
+            }
+        }
+        CatalogBackend::Foundationdb => anyhow::bail!(
+            "Database health checks are not implemented for the FoundationDB catalog backend scaffold."
+        ),
     }
 }
 
