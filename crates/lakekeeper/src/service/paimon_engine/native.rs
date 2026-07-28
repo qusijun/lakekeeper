@@ -64,6 +64,15 @@ pub struct MaterializedNativePaimonCatalogOptionSet {
     temp_dir: Option<PathBuf>,
 }
 
+pub trait NativePaimonCatalogBridge: Send + Sync {
+    type Catalog;
+
+    fn create_catalog(
+        &self,
+        options: &MaterializedNativePaimonCatalogOptionSet,
+    ) -> Result<Self::Catalog, PaimonEngineError>;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativePaimonCatalogAuth {
     None,
@@ -296,6 +305,15 @@ impl NativePaimonRuntimeConfig {
             temp_file_options,
         })
     }
+
+    pub fn build_catalog<B: NativePaimonCatalogBridge>(
+        &self,
+        bridge: &B,
+    ) -> Result<B::Catalog, PaimonEngineError> {
+        let option_set = self.catalog_option_set()?;
+        let materialized = option_set.materialize()?;
+        bridge.create_catalog(&materialized)
+    }
 }
 
 impl NativePaimonCatalogOptionSet {
@@ -343,6 +361,11 @@ impl MaterializedNativePaimonCatalogOptionSet {
     #[must_use]
     pub fn temp_dir(&self) -> Option<&Path> {
         self.temp_dir.as_deref()
+    }
+
+    #[must_use]
+    pub fn options(&self) -> &HashMap<String, String> {
+        &self.options
     }
 }
 
@@ -681,14 +704,15 @@ fn gcs_catalog_auth(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::Mutex};
 
     use super::{
-        NativePaimonAdlsProfile, NativePaimonCatalogAuth, NativePaimonGcsAuth,
-        NativePaimonRuntimeConfig, NativePaimonS3Auth, NativePaimonStorageConfig,
+        MaterializedNativePaimonCatalogOptionSet, NativePaimonAdlsProfile, NativePaimonCatalogAuth,
+        NativePaimonCatalogBridge, NativePaimonGcsAuth, NativePaimonRuntimeConfig,
+        NativePaimonS3Auth, NativePaimonStorageConfig,
     };
     use crate::service::{
-        Location,
+        Location, PaimonEngineError,
         storage::{
             AzCredential, GcsCredential, GcsProfile, GcsServiceKey, GenericAdlsProfile,
             MemoryProfile, S3Credential, S3Profile, StorageCredential, StorageProfile,
@@ -1120,6 +1144,68 @@ mod tests {
         assert!(file_contents.contains("\"project_id\":\"project-1\""));
         drop(materialized);
         assert!(!temp_dir.exists());
+    }
+
+    #[derive(Default)]
+    struct RecordingCatalogBridge {
+        seen_credential_paths: Mutex<Vec<String>>,
+    }
+
+    impl NativePaimonCatalogBridge for RecordingCatalogBridge {
+        type Catalog = usize;
+
+        fn create_catalog(
+            &self,
+            options: &MaterializedNativePaimonCatalogOptionSet,
+        ) -> Result<Self::Catalog, PaimonEngineError> {
+            if let Some(path) = options.options().get("gcs.credential-path") {
+                assert!(std::path::Path::new(path).exists());
+                self.seen_credential_paths
+                    .lock()
+                    .unwrap()
+                    .push(path.clone());
+            }
+            Ok(options.options().len())
+        }
+    }
+
+    #[test]
+    fn build_catalog_materializes_temp_files_before_bridge_call() {
+        let warehouse_location: Location =
+            "gs://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let runtime = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::Gcs(GcsProfile {
+                bucket: "warehouse-bucket".to_string(),
+                key_prefix: Some("root".to_string()),
+                sts_enabled: true,
+                storage_layout: None,
+            }),
+            Some(&StorageCredential::Gcs(GcsCredential::ServiceAccountKey {
+                key: GcsServiceKey {
+                    r#type: "service_account".to_string(),
+                    project_id: "project-1".to_string(),
+                    private_key_id: "pk".to_string(),
+                    private_key: "secret".to_string(),
+                    client_email: "svc@example.com".to_string(),
+                    client_id: "123".to_string(),
+                    auth_uri: "https://accounts.google.com/o/oauth2/auth".to_string(),
+                    token_uri: "https://oauth2.googleapis.com/token".to_string(),
+                    auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs"
+                        .to_string(),
+                    client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/svc"
+                        .to_string(),
+                    universe_domain: "googleapis.com".to_string(),
+                },
+            })),
+        )
+        .unwrap();
+
+        let bridge = RecordingCatalogBridge::default();
+        let option_count = runtime.build_catalog(&bridge).unwrap();
+        let seen_paths = bridge.seen_credential_paths.lock().unwrap();
+        assert_eq!(seen_paths.len(), 1);
+        assert!(option_count >= 2);
     }
 
     #[cfg(feature = "test-utils")]

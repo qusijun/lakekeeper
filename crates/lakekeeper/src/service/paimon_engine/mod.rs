@@ -8,11 +8,11 @@ mod unavailable;
 pub use default::{DefaultPaimonEngine, DynPaimonEngine, new_default_paimon_engine};
 pub use native::{
     MaterializedNativePaimonCatalogOptionSet, NativePaimonAdlsConfig, NativePaimonAdlsProfile,
-    NativePaimonCatalogAuth, NativePaimonCatalogBootstrap, NativePaimonCatalogOptionSet,
-    NativePaimonEngineBackend, NativePaimonGcsAuth, NativePaimonGcsConfig,
-    NativePaimonRuntimeConfig, NativePaimonS3Auth, NativePaimonS3Config, NativePaimonStorageConfig,
-    NativePaimonTempFileOption, native_backend_error, native_default_paimon_engine,
-    native_paimon_engine,
+    NativePaimonCatalogAuth, NativePaimonCatalogBootstrap, NativePaimonCatalogBridge,
+    NativePaimonCatalogOptionSet, NativePaimonEngineBackend, NativePaimonGcsAuth,
+    NativePaimonGcsConfig, NativePaimonRuntimeConfig, NativePaimonS3Auth, NativePaimonS3Config,
+    NativePaimonStorageConfig, NativePaimonTempFileOption, native_backend_error,
+    native_default_paimon_engine, native_paimon_engine,
 };
 pub use unavailable::{
     UnavailablePaimonEngine, UnavailablePaimonEngineBackend, unavailable_default_paimon_engine,
