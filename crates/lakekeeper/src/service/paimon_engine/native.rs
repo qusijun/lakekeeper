@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use url::Url;
 
 use super::{
     AlteredPaimonEngineTable, DefaultPaimonEngine, InitializedPaimonTable, LoadedPaimonEngineTable,
@@ -12,14 +13,113 @@ use super::{
         new_default_paimon_engine,
     },
 };
+use crate::service::{
+    Location,
+    storage::{
+        AzCredential, GcsCredential, GcsProfile, GcsServiceKey, GenericAdlsProfile, OneLakeProfile,
+        S3Credential, S3Profile, StorageCredential, StorageProfile,
+        s3::{S3AccessKeyCredential, S3AwsSystemIdentityCredential, S3CloudflareR2Credential},
+    },
+};
 
 const NATIVE_ENGINE_DISABLED_DETAIL: &str =
     "compile with feature `paimon-engine` to enable the native Paimon backend";
 const NATIVE_ENGINE_UNWIRED_DETAIL: &str =
     "native Paimon backend is enabled but the paimon-rust bridge is not implemented yet";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePaimonRuntimeConfig {
+    pub warehouse_location: Location,
+    pub storage: NativePaimonStorageConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativePaimonStorageConfig {
+    S3(NativePaimonS3Config),
+    Adls(NativePaimonAdlsConfig),
+    Gcs(NativePaimonGcsConfig),
+    #[cfg(feature = "test-utils")]
+    Memory(NativePaimonMemoryConfig),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePaimonS3Config {
+    pub bucket: String,
+    pub key_prefix: Option<String>,
+    pub region: String,
+    pub endpoint: Option<Url>,
+    pub path_style_access: bool,
+    pub auth: NativePaimonS3Auth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativePaimonS3Auth {
+    AccessKey(S3AccessKeyCredential),
+    AwsSystemIdentity(S3AwsSystemIdentityCredential),
+    CloudflareR2(S3CloudflareR2Credential),
+    AliyunOss(S3AccessKeyCredential),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativePaimonAdlsProfile {
+    Generic(GenericAdlsProfile),
+    OneLake(OneLakeProfile),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePaimonAdlsConfig {
+    pub profile: NativePaimonAdlsProfile,
+    pub auth: AzCredential,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePaimonGcsConfig {
+    pub bucket: String,
+    pub key_prefix: Option<String>,
+    pub auth: NativePaimonGcsAuth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativePaimonGcsAuth {
+    ServiceAccountKey(GcsServiceKey),
+    GcpSystemIdentity,
+}
+
+#[cfg(feature = "test-utils")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePaimonMemoryConfig {
+    pub base_location: Location,
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativePaimonEngineBackend;
+
+impl NativePaimonRuntimeConfig {
+    pub fn from_warehouse(
+        warehouse_location: &Location,
+        storage_profile: &StorageProfile,
+        storage_credential: Option<&StorageCredential>,
+    ) -> Result<Self, PaimonEngineError> {
+        let profile_base_location = storage_profile
+            .base_location()
+            .map_err(|err| PaimonEngineError::validation(err.to_string()))?;
+        if !warehouse_location.is_sublocation_of(&profile_base_location) {
+            return Err(PaimonEngineError::validation(format!(
+                "warehouse location '{}' is outside storage profile base location '{}'",
+                warehouse_location, profile_base_location
+            )));
+        }
+
+        Ok(Self {
+            warehouse_location: warehouse_location.clone(),
+            storage: storage_config_from_profile(
+                storage_profile,
+                &profile_base_location,
+                storage_credential,
+            )?,
+        })
+    }
+}
 
 #[async_trait]
 impl PaimonEngineBackend for NativePaimonEngineBackend {
@@ -82,5 +182,340 @@ pub fn native_backend_error() -> PaimonEngineError {
         PaimonEngineError::engine_unavailable(NATIVE_ENGINE_UNWIRED_DETAIL)
     } else {
         PaimonEngineError::engine_unavailable(NATIVE_ENGINE_DISABLED_DETAIL)
+    }
+}
+
+fn storage_config_from_profile(
+    storage_profile: &StorageProfile,
+    profile_base_location: &Location,
+    storage_credential: Option<&StorageCredential>,
+) -> Result<NativePaimonStorageConfig, PaimonEngineError> {
+    match storage_profile {
+        StorageProfile::S3(profile) => Ok(NativePaimonStorageConfig::S3(s3_storage_config(
+            profile,
+            storage_credential,
+        )?)),
+        StorageProfile::Adls(profile) => Ok(NativePaimonStorageConfig::Adls(adls_storage_config(
+            profile.clone(),
+            storage_credential,
+        )?)),
+        StorageProfile::OneLake(profile) => Ok(NativePaimonStorageConfig::Adls(
+            onelake_storage_config(profile.clone(), storage_credential)?,
+        )),
+        StorageProfile::Gcs(profile) => Ok(NativePaimonStorageConfig::Gcs(gcs_storage_config(
+            profile,
+            storage_credential,
+        )?)),
+        #[cfg(feature = "test-utils")]
+        StorageProfile::Memory(_profile) => Ok(NativePaimonStorageConfig::Memory(
+            NativePaimonMemoryConfig {
+                base_location: profile_base_location.clone(),
+            },
+        )),
+    }
+}
+
+fn s3_storage_config(
+    profile: &S3Profile,
+    storage_credential: Option<&StorageCredential>,
+) -> Result<NativePaimonS3Config, PaimonEngineError> {
+    let auth = match require_storage_credential(storage_credential, "s3")? {
+        StorageCredential::S3(credential) => match credential {
+            S3Credential::AccessKey(credential) => {
+                NativePaimonS3Auth::AccessKey(credential.clone())
+            }
+            S3Credential::AwsSystemIdentity(credential) => {
+                NativePaimonS3Auth::AwsSystemIdentity(credential.clone())
+            }
+            S3Credential::CloudflareR2(credential) => {
+                NativePaimonS3Auth::CloudflareR2(credential.clone())
+            }
+            S3Credential::AliyunOss(credential) => {
+                NativePaimonS3Auth::AliyunOss(credential.clone())
+            }
+        },
+        other => {
+            return Err(PaimonEngineError::validation(format!(
+                "storage credential type '{}' does not match storage profile type 's3'",
+                other.storage_type()
+            )));
+        }
+    };
+
+    Ok(NativePaimonS3Config {
+        bucket: profile.bucket.clone(),
+        key_prefix: profile.key_prefix.clone(),
+        region: profile.region.clone(),
+        endpoint: profile.endpoint.clone(),
+        path_style_access: profile.path_style_access.unwrap_or_default(),
+        auth,
+    })
+}
+
+fn adls_storage_config(
+    profile: GenericAdlsProfile,
+    storage_credential: Option<&StorageCredential>,
+) -> Result<NativePaimonAdlsConfig, PaimonEngineError> {
+    let auth = match require_storage_credential(storage_credential, "adls")? {
+        StorageCredential::Az(credential) => credential.clone(),
+        other => {
+            return Err(PaimonEngineError::validation(format!(
+                "storage credential type '{}' does not match storage profile type 'adls'",
+                other.storage_type()
+            )));
+        }
+    };
+
+    Ok(NativePaimonAdlsConfig {
+        profile: NativePaimonAdlsProfile::Generic(profile),
+        auth,
+    })
+}
+
+fn onelake_storage_config(
+    profile: OneLakeProfile,
+    storage_credential: Option<&StorageCredential>,
+) -> Result<NativePaimonAdlsConfig, PaimonEngineError> {
+    let auth = match require_storage_credential(storage_credential, "onelake")? {
+        StorageCredential::Az(credential) => credential.clone(),
+        other => {
+            return Err(PaimonEngineError::validation(format!(
+                "storage credential type '{}' does not match storage profile type 'onelake'",
+                other.storage_type()
+            )));
+        }
+    };
+
+    Ok(NativePaimonAdlsConfig {
+        profile: NativePaimonAdlsProfile::OneLake(profile),
+        auth,
+    })
+}
+
+fn gcs_storage_config(
+    profile: &GcsProfile,
+    storage_credential: Option<&StorageCredential>,
+) -> Result<NativePaimonGcsConfig, PaimonEngineError> {
+    let auth = match require_storage_credential(storage_credential, "gcs")? {
+        StorageCredential::Gcs(credential) => match credential {
+            GcsCredential::ServiceAccountKey { key } => {
+                NativePaimonGcsAuth::ServiceAccountKey(key.clone())
+            }
+            GcsCredential::GcpSystemIdentity {} => NativePaimonGcsAuth::GcpSystemIdentity,
+        },
+        other => {
+            return Err(PaimonEngineError::validation(format!(
+                "storage credential type '{}' does not match storage profile type 'gcs'",
+                other.storage_type()
+            )));
+        }
+    };
+
+    Ok(NativePaimonGcsConfig {
+        bucket: profile.bucket.clone(),
+        key_prefix: profile.key_prefix.clone(),
+        auth,
+    })
+}
+
+fn require_storage_credential<'a>(
+    storage_credential: Option<&'a StorageCredential>,
+    storage_type: &str,
+) -> Result<&'a StorageCredential, PaimonEngineError> {
+    storage_credential.ok_or_else(|| {
+        PaimonEngineError::validation(format!(
+            "native Paimon backend requires storage credentials for {storage_type} warehouses"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        NativePaimonAdlsProfile, NativePaimonGcsAuth, NativePaimonRuntimeConfig,
+        NativePaimonS3Auth, NativePaimonStorageConfig,
+    };
+    use crate::service::{
+        Location,
+        storage::{
+            AzCredential, GcsCredential, GcsProfile, GcsServiceKey, GenericAdlsProfile,
+            MemoryProfile, S3Credential, S3Profile, StorageCredential, StorageProfile,
+            s3::{S3AccessKeyCredential, S3AwsSystemIdentityCredential},
+        },
+    };
+
+    fn s3_profile() -> S3Profile {
+        S3Profile::builder()
+            .bucket("warehouse-bucket".to_string())
+            .key_prefix("root".to_string())
+            .region("us-east-1".to_string())
+            .sts_enabled(true)
+            .flavor(Default::default())
+            .build()
+    }
+
+    #[test]
+    fn builds_runtime_config_for_s3_warehouse() {
+        let warehouse_location: Location =
+            "s3://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let config = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::S3(s3_profile()),
+            Some(&StorageCredential::S3(S3Credential::AccessKey(
+                S3AccessKeyCredential {
+                    access_key_id: "access".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    external_id: None,
+                },
+            ))),
+        )
+        .unwrap();
+
+        assert_eq!(config.warehouse_location, warehouse_location);
+        match config.storage {
+            NativePaimonStorageConfig::S3(config) => {
+                assert_eq!(config.bucket, "warehouse-bucket");
+                assert_eq!(config.key_prefix.as_deref(), Some("root"));
+                assert!(matches!(config.auth, NativePaimonS3Auth::AccessKey(_)));
+            }
+            other => panic!("expected s3 config, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_mismatched_storage_credentials() {
+        let warehouse_location: Location =
+            "s3://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let err = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::S3(s3_profile()),
+            Some(&StorageCredential::Az(AzCredential::AzureSystemIdentity {})),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("does not match"));
+    }
+
+    #[test]
+    fn rejects_warehouse_location_outside_storage_base_location() {
+        let warehouse_location: Location = "s3://warehouse-bucket/other-root/warehouse-a"
+            .parse()
+            .unwrap();
+        let err = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::S3(s3_profile()),
+            Some(&StorageCredential::S3(S3Credential::AwsSystemIdentity(
+                S3AwsSystemIdentityCredential { external_id: None },
+            ))),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("outside storage profile base location")
+        );
+    }
+
+    #[test]
+    fn builds_runtime_config_for_adls_warehouse() {
+        let warehouse_location: Location =
+            "abfss://fs@account.dfs.core.windows.net/root/warehouse-a"
+                .parse()
+                .unwrap();
+        let profile = StorageProfile::Adls(GenericAdlsProfile {
+            filesystem: "fs".to_string(),
+            key_prefix: Some("root".to_string()),
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: None,
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        });
+        let config = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &profile,
+            Some(&StorageCredential::Az(AzCredential::AzureSystemIdentity {})),
+        )
+        .unwrap();
+
+        match config.storage {
+            NativePaimonStorageConfig::Adls(config) => {
+                assert!(matches!(
+                    config.profile,
+                    NativePaimonAdlsProfile::Generic(_)
+                ));
+                assert!(matches!(config.auth, AzCredential::AzureSystemIdentity {}));
+            }
+            other => panic!("expected adls config, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builds_runtime_config_for_gcs_warehouse() {
+        let warehouse_location: Location =
+            "gs://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let profile = StorageProfile::Gcs(GcsProfile {
+            bucket: "warehouse-bucket".to_string(),
+            key_prefix: Some("root".to_string()),
+            sts_enabled: true,
+            storage_layout: None,
+        });
+        let config = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &profile,
+            Some(&StorageCredential::Gcs(GcsCredential::ServiceAccountKey {
+                key: GcsServiceKey {
+                    r#type: "service_account".to_string(),
+                    project_id: "project-1".to_string(),
+                    private_key_id: "pk".to_string(),
+                    private_key: "secret".to_string(),
+                    client_email: "svc@example.com".to_string(),
+                    client_id: "123".to_string(),
+                    auth_uri: "https://accounts.google.com/o/oauth2/auth".to_string(),
+                    token_uri: "https://oauth2.googleapis.com/token".to_string(),
+                    auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs"
+                        .to_string(),
+                    client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/svc"
+                        .to_string(),
+                    universe_domain: "googleapis.com".to_string(),
+                },
+            })),
+        )
+        .unwrap();
+
+        match config.storage {
+            NativePaimonStorageConfig::Gcs(config) => {
+                assert_eq!(config.bucket, "warehouse-bucket");
+                assert!(matches!(
+                    config.auth,
+                    NativePaimonGcsAuth::ServiceAccountKey(_)
+                ));
+            }
+            other => panic!("expected gcs config, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "test-utils")]
+    #[test]
+    fn builds_runtime_config_for_memory_warehouse() {
+        let profile = MemoryProfile::default();
+        let warehouse_location = StorageProfile::Memory(profile.clone())
+            .base_location()
+            .unwrap();
+        let config = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::Memory(profile.clone()),
+            None,
+        )
+        .unwrap();
+
+        match config.storage {
+            NativePaimonStorageConfig::Memory(memory) => {
+                assert_eq!(memory.base_location, warehouse_location);
+            }
+            other => panic!("expected memory config, got {other:?}"),
+        }
     }
 }
