@@ -37,6 +37,7 @@ lakekeeper-console = { git = "https://github.com/lakekeeper/console", rev = "v0.
 lakekeeper-events-kafka = { path = "../lakekeeper-events-kafka" }
 lakekeeper-events-nats = { path = "../lakekeeper-events-nats" }
 lakekeeper-secrets-kv2 = { path = "../lakekeeper-secrets-kv2" }
+lakekeeper-storage-foundationdb = { path = "../lakekeeper-storage-foundationdb" }
 lakekeeper-storage-postgres = { path = "../lakekeeper-storage-postgres" }
 limes = { workspace = true }
 reqwest = { workspace = true }

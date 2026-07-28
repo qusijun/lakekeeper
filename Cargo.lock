@@ -3938,6 +3938,7 @@ dependencies = [
  "lakekeeper-events-kafka",
  "lakekeeper-events-nats",
  "lakekeeper-secrets-kv2",
+ "lakekeeper-storage-foundationdb",
  "lakekeeper-storage-postgres",
  "limes",
  "reqwest 0.12.28",
@@ -4105,6 +4106,18 @@ dependencies = [
  "vaultrs",
  "vaultrs-login",
  "veil",
+]
+
+[[package]]
+name = "lakekeeper-storage-foundationdb"
+version = "0.13.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "lakekeeper",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

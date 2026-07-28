@@ -29,6 +29,7 @@ mod ui;
 mod wait_for_db;
 
 pub(crate) use config::CONFIG_BIN;
+use crate::config::CatalogBackend;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
@@ -179,6 +180,15 @@ impl From<ReconcileModeArg> for lakekeeper_authz_openfga::ReconcileMode {
     }
 }
 
+fn ensure_postgres_catalog_backend(command_name: &str) -> anyhow::Result<()> {
+    if matches!(CONFIG_BIN.catalog.backend, CatalogBackend::Foundationdb) {
+        anyhow::bail!(
+            "`{command_name}` is only implemented for the PostgreSQL catalog backend in this build."
+        );
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -209,6 +219,7 @@ async fn main() -> anyhow::Result<()> {
             wait_for_db::wait_for_db(check_migrations, retries, backoff, check_db).await?;
         }
         Some(Commands::Migrate {}) => {
+            ensure_postgres_catalog_backend("migrate")?;
             print_info();
             migrate().await?;
         }
@@ -230,11 +241,13 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Commands::Openfga { command }) => match command {
             OpenfgaCommands::Reconcile { mode, dry_run } => {
+                ensure_postgres_catalog_backend("openfga reconcile")?;
                 print_info();
                 openfga_reconcile(mode.into(), dry_run).await?;
             }
         },
         Some(Commands::ReopenBootstrap { yes }) => {
+            ensure_postgres_catalog_backend("reopen-bootstrap")?;
             print_info();
             reopen_bootstrap(yes).await?;
         }
@@ -283,8 +296,17 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve_and_maybe_migrate(force_start: bool) -> anyhow::Result<()> {
     if CONFIG_BIN.debug.migrate_before_serve {
-        wait_for_db::wait_for_db(false, 15, 2, true).await?;
-        migrate().await?;
+        match CONFIG_BIN.catalog.backend {
+            CatalogBackend::Postgres => {
+                wait_for_db::wait_for_db(false, 15, 2, true).await?;
+                migrate().await?;
+            }
+            CatalogBackend::Foundationdb => {
+                anyhow::bail!(
+                    "`debug.migrate_before_serve` is only supported for the PostgreSQL catalog backend."
+                );
+            }
+        }
     }
     serve(force_start).await
 }
@@ -440,7 +462,7 @@ async fn serve(force_start: bool) -> anyhow::Result<()> {
         CONFIG.listen_port
     );
     let bind_addr = std::net::SocketAddr::from((CONFIG.bind_ip, CONFIG.listen_port));
-    if !force_start {
+    if !force_start && matches!(CONFIG_BIN.catalog.backend, CatalogBackend::Postgres) {
         wait_for_db::wait_for_db(true, 0, 0, true).await?;
     }
     serve::serve_default(bind_addr).await?;

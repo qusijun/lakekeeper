@@ -5,6 +5,7 @@ use lakekeeper_storage_postgres::{
     migrations::{MigrationState, check_migration_status},
 };
 
+use crate::{CONFIG_BIN, config::CatalogBackend};
 use crate::healthcheck::db_health_check;
 
 pub(crate) async fn wait_for_db(
@@ -13,6 +14,12 @@ pub(crate) async fn wait_for_db(
     backoff: u64,
     check_db: bool,
 ) -> anyhow::Result<()> {
+    if matches!(CONFIG_BIN.catalog.backend, CatalogBackend::Foundationdb) {
+        anyhow::bail!(
+            "wait-for-db is only implemented for the PostgreSQL catalog backend in this build."
+        );
+    }
+
     if check_db {
         let mut counter = 0;
 

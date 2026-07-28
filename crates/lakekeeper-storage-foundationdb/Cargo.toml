@@ -1,0 +1,20 @@
+[package]
+name = "lakekeeper-storage-foundationdb"
+version = { workspace = true }
+edition = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+description = "FoundationDB catalog backend scaffold for Lakekeeper"
+keywords = ["iceberg", "rest", "lakekeeper", "foundationdb"]
+
+[lib]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+lakekeeper = { path = "../lakekeeper" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }

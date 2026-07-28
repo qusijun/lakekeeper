@@ -13,6 +13,7 @@ use lakekeeper::{
     },
     tracing,
 };
+use lakekeeper_storage_foundationdb as foundationdb_backend;
 use lakekeeper_storage_postgres::{
     CatalogState, PostgresBackend, PostgresStatisticsSink, SecretsState as PgSecretsState,
     get_reader_pool, get_writer_pool,
@@ -21,11 +22,21 @@ use lakekeeper_storage_postgres::{
 #[cfg(feature = "ui")]
 use crate::ui;
 use crate::{
-    authorizer::AuthorizerEnum, events::get_default_cloud_event_backends_from_config,
+    authorizer::AuthorizerEnum,
+    config::CatalogBackend,
+    events::get_default_cloud_event_backends_from_config,
     secrets::SecretsEnum,
+    CONFIG_BIN,
 };
 
 pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
+    match CONFIG_BIN.catalog.backend {
+        CatalogBackend::Postgres => serve_postgres(bind_addr).await,
+        CatalogBackend::Foundationdb => serve_foundationdb(bind_addr).await,
+    }
+}
+
+async fn serve_postgres(bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
     let (catalog, secrets, stats) = get_default_catalog_from_config().await?;
     let server_id = <PostgresBackend as CatalogStore>::get_server_info(catalog.clone())
         .await?
@@ -51,6 +62,15 @@ pub(crate) async fn serve_default(bind_addr: std::net::SocketAddr) -> anyhow::Re
             .await
         }
     }
+}
+
+async fn serve_foundationdb(_bind_addr: std::net::SocketAddr) -> anyhow::Result<()> {
+    let state = foundationdb_backend::CatalogState::from_config(CONFIG_BIN.foundationdb.clone());
+    let root_prefix = state.config().root_prefix.clone();
+    anyhow::bail!(
+        "FoundationDB catalog backend scaffold is wired into the binary, but serving is not \
+         implemented yet. Current root prefix: {root_prefix}"
+    );
 }
 
 async fn serve_with_authn<C: CatalogStore, S: SecretStore, A: Authorizer>(
