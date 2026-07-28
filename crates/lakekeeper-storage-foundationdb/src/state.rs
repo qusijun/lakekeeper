@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
-use lakekeeper::service::health::{Health, HealthExt, HealthStatus};
+use lakekeeper::service::{
+    StateOrTransaction, StateOrTransactionEnum,
+    health::{Health, HealthExt, HealthStatus},
+};
 use tokio::sync::RwLock;
 
-use crate::config::FoundationDbConfig;
+use crate::{FoundationDbConfig, FoundationDbTransaction};
 
 #[derive(Clone, Debug)]
 pub struct CatalogState {
@@ -49,6 +52,18 @@ impl HealthExt for CatalogState {
         let mut lock = self.health.write().await;
         lock.clear();
         lock.push(Health::now("foundationdb", HealthStatus::Unknown));
+    }
+}
+
+impl<'txn> StateOrTransaction<CatalogState, FoundationDbTransaction> for CatalogState {
+    fn as_enum_mut(&mut self) -> StateOrTransactionEnum<'_, CatalogState, FoundationDbTransaction> {
+        StateOrTransactionEnum::State(self.clone())
+    }
+}
+
+impl<'txn> StateOrTransaction<CatalogState, FoundationDbTransaction> for FoundationDbTransaction {
+    fn as_enum_mut(&mut self) -> StateOrTransactionEnum<'_, CatalogState, FoundationDbTransaction> {
+        StateOrTransactionEnum::Transaction(self)
     }
 }
 
