@@ -21,6 +21,7 @@ all = ["s3-signer", "router", "open-api"]
 s3-signer = ["dep:aws-sigv4"]
 router = ["dep:tower-http", "dep:tower"]
 default = ["s3-signer", "router"]
+paimon-engine = []
 test-utils = ["lakekeeper-io/storage-in-memory"]
 open-api = ["dep:utoipa", "dep:utoipa-swagger-ui", "dep:serde_norway"]
 # Enable `derive(sqlx::Type)` on lakekeeper's domain enums/newtypes so that

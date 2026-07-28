@@ -17,7 +17,13 @@ use tower_http::{
 };
 
 #[cfg(feature = "open-api")]
-use crate::api::management::v1::api_doc as v1_api_doc;
+use crate::api::{
+    data::v1::{
+        generic_tables::api_doc as generic_table_api_doc,
+        paimon_tables::api_doc as paimon_table_api_doc,
+    },
+    management::v1::api_doc as v1_api_doc,
+};
 use crate::{
     CONFIG, CancellationToken,
     api::{
@@ -126,6 +132,10 @@ pub async fn new_full_router<
         crate::server::CatalogServer<C, A, S>,
         State<A, C, S>,
     >();
+    let paimon_table_routes = crate::api::data::v1::paimon_tables::router::<
+        crate::server::CatalogServer<C, A, S>,
+        State<A, C, S>,
+    >();
 
     let authorizer = state.v1_state.authz.clone();
     let management_routes = Router::new().merge(ApiServer::new_v1_router(&authorizer));
@@ -150,7 +160,10 @@ pub async fn new_full_router<
     let mut router = Router::new()
         .nest("/catalog/v1", v1_routes)
         .nest("/management/v1", management_routes)
-        .nest("/lakekeeper/v1", generic_table_routes)
+        .nest(
+            "/lakekeeper/v1",
+            generic_table_routes.merge(paimon_table_routes),
+        )
         // Maintenance gate: rejects mutating requests (POST/PUT/PATCH/DELETE)
         // with 503 + Retry-After when MAINTENANCE_MODE=read-only. Applied
         // before `/health` is added so liveness/readiness probes are
@@ -404,6 +417,14 @@ fn maybe_merge_swagger_router<C: CatalogStore, A: Authorizer + Clone, S: SecretS
                 .url(
                     "/api-docs/management/v1/openapi.json",
                     v1_api_doc::<A>(queue_api_configs, project_queue_api_configs),
+                )
+                .url(
+                    "/api-docs/lakekeeper/v1/generic-tables/openapi.json",
+                    generic_table_api_doc(),
+                )
+                .url(
+                    "/api-docs/lakekeeper/v1/paimon-tables/openapi.json",
+                    paimon_table_api_doc(),
                 )
                 .external_url_unchecked(
                     "/api-docs/catalog/v1/openapi.json",

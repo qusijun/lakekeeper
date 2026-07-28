@@ -177,6 +177,15 @@ generate_endpoints! {
         LoadGenericTableCredentials(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/generic-tables/{table}/credentials"),
     }
 
+    enum PaimonTableV1 {
+        CreatePaimonTable(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables"),
+        ListPaimonTables(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables"),
+        LoadPaimonTable(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables/{table}"),
+        DropPaimonTable(DELETE, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables/{table}"),
+        LoadPaimonTableCredentials(GET, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables/{table}/credentials"),
+        UpdatePaimonCommitState(POST, "/lakekeeper/v1/{prefix}/namespaces/{namespace}/paimon-tables/{table}/commit-state"),
+    }
+
     enum Sign {
         S3RequestGlobal(POST, "/catalog/v1/aws/s3/sign"),
         S3RequestPrefix(POST, "/catalog/v1/{prefix}/v1/aws/s3/sign"),
@@ -377,6 +386,9 @@ mod test {
         let variants: Vec<Endpoint> = GenericTableV1Endpoint::iter().map(Into::into).collect_vec();
         all_variants.extend(variants);
 
+        let variants: Vec<Endpoint> = PaimonTableV1Endpoint::iter().map(Into::into).collect_vec();
+        all_variants.extend(variants);
+
         let endpoint_variants = Endpoint::iter().collect_vec();
 
         // Check no duplicates in all_variants
@@ -428,6 +440,8 @@ mod test {
         let catalog_yaml = include_str!("../../../../docs/docs/api/rest-catalog-open-api.yaml");
         let generic_table_yaml =
             include_str!("../../../../docs/docs/api/generic-table-open-api.yaml");
+        let paimon_table_yaml =
+            include_str!("../../../../docs/docs/api/paimon-table-open-api.yaml");
 
         // Parse YAML files
         let management: Value =
@@ -436,6 +450,8 @@ mod test {
             serde_norway::from_str(catalog_yaml).expect("Failed to parse catalog YAML");
         let generic_table: Value =
             serde_norway::from_str(generic_table_yaml).expect("Failed to parse generic-table YAML");
+        let paimon_table: Value =
+            serde_norway::from_str(paimon_table_yaml).expect("Failed to parse paimon-table YAML");
 
         // Extract endpoints from management YAML
         let mut expected_endpoints = HashSet::new();
@@ -477,6 +493,22 @@ mod test {
 
         // Process generic-table YAML paths (already prefixed with /lakekeeper/v1)
         if let Value::Mapping(paths) = &generic_table["paths"] {
+            for (path, methods) in paths {
+                let path_str = path.as_str().expect("Path is not a string");
+                if let Value::Mapping(methods_map) = methods {
+                    for (method, _) in methods_map {
+                        let method_str = method.as_str().expect("Method is not a string");
+                        if method_str != "parameters" {
+                            let normalized_path = path_str.trim_start_matches('/');
+                            expected_endpoints
+                                .insert((method_str.to_uppercase(), normalized_path.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Value::Mapping(paths) = &paimon_table["paths"] {
             for (path, methods) in paths {
                 let path_str = path.as_str().expect("Path is not a string");
                 if let Value::Mapping(methods_map) = methods {

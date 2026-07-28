@@ -613,6 +613,27 @@ impl AuthZTableInfo for TableInfo {
     }
 }
 
+impl AuthZTableInfo for crate::service::PaimonTableInfo {
+    fn warehouse_id(&self) -> WarehouseId {
+        self.warehouse_id
+    }
+    fn table_ident(&self) -> &TableIdent {
+        &self.tabular_ident
+    }
+    fn table_id(&self) -> TableId {
+        self.tabular_id
+    }
+    fn namespace_id(&self) -> NamespaceId {
+        self.namespace_id
+    }
+    fn is_protected(&self) -> bool {
+        self.protected
+    }
+    fn properties(&self) -> &HashMap<String, String> {
+        &self.table_options
+    }
+}
+
 impl AuthZTableInfo for TableDeletionInfo {
     fn warehouse_id(&self) -> WarehouseId {
         self.tabular.warehouse_id

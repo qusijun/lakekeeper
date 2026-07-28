@@ -2,6 +2,7 @@ pub(crate) mod commit_tables;
 pub(crate) mod compression_codec;
 mod config;
 pub mod generic_tables;
+pub mod paimon_tables;
 pub(crate) mod io;
 mod metrics;
 pub mod namespace;
@@ -116,6 +117,13 @@ pub(crate) fn require_iceberg_warehouse(
     Ok(warehouse)
 }
 
+pub(crate) fn require_paimon_warehouse(
+    warehouse: Arc<ResolvedWarehouse>,
+) -> std::result::Result<Arc<ResolvedWarehouse>, ErrorModel> {
+    ensure_warehouse_catalog_kind(warehouse.as_ref(), CatalogKind::Paimon)?;
+    Ok(warehouse)
+}
+
 pub(crate) async fn maybe_get_secret<S: SecretStore>(
     secret: Option<crate::SecretId>,
     state: &S,
@@ -133,7 +141,7 @@ pub(crate) async fn maybe_get_secret<S: SecretStore>(
 mod tests {
     use std::sync::Arc;
 
-    use super::require_iceberg_warehouse;
+    use super::{require_iceberg_warehouse, require_paimon_warehouse};
     use crate::{
         ProjectId, WarehouseId,
         api::management::v1::warehouse::TabularDeleteProfile,
@@ -176,6 +184,25 @@ mod tests {
         let warehouse = test_warehouse(CatalogKind::Paimon);
 
         let error = require_iceberg_warehouse(warehouse).unwrap_err();
+
+        assert_eq!(error.r#type, "WarehouseCatalogKindMismatch");
+        assert_eq!(error.code, 400);
+    }
+
+    #[test]
+    fn require_paimon_warehouse_accepts_paimon() {
+        let warehouse = test_warehouse(CatalogKind::Paimon);
+
+        let resolved = require_paimon_warehouse(warehouse.clone()).unwrap();
+
+        assert_eq!(resolved.warehouse_id, warehouse.warehouse_id);
+    }
+
+    #[test]
+    fn require_paimon_warehouse_rejects_iceberg() {
+        let warehouse = test_warehouse(CatalogKind::Iceberg);
+
+        let error = require_paimon_warehouse(warehouse).unwrap_err();
 
         assert_eq!(error.r#type, "WarehouseCatalogKindMismatch");
         assert_eq!(error.code, 400);
