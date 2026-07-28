@@ -1,7 +1,13 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use url::Url;
+use uuid::Uuid;
 
 use super::{
     AlteredPaimonEngineTable, DefaultPaimonEngine, InitializedPaimonTable, LoadedPaimonEngineTable,
@@ -50,6 +56,12 @@ pub struct NativePaimonTempFileOption {
     pub option_key: String,
     pub file_name_hint: String,
     pub file_contents: String,
+}
+
+#[derive(Debug)]
+pub struct MaterializedNativePaimonCatalogOptionSet {
+    pub options: HashMap<String, String>,
+    temp_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,6 +298,68 @@ impl NativePaimonRuntimeConfig {
     }
 }
 
+impl NativePaimonCatalogOptionSet {
+    pub fn materialize(
+        self,
+    ) -> Result<MaterializedNativePaimonCatalogOptionSet, PaimonEngineError> {
+        if self.temp_file_options.is_empty() {
+            return Ok(MaterializedNativePaimonCatalogOptionSet {
+                options: self.options,
+                temp_dir: None,
+            });
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!("lakekeeper-paimon-{}", Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).map_err(|err| {
+            PaimonEngineError::cleanup_failed(format!(
+                "failed to create native Paimon temp dir '{}': {err}",
+                temp_dir.display()
+            ))
+        })?;
+
+        let mut options = self.options;
+        for temp_file in self.temp_file_options {
+            let file_path = temp_dir.join(sanitize_file_name(&temp_file.file_name_hint));
+            fs::write(&file_path, temp_file.file_contents).map_err(|err| {
+                PaimonEngineError::cleanup_failed(format!(
+                    "failed to materialize native Paimon temp file '{}': {err}",
+                    file_path.display()
+                ))
+            })?;
+            options.insert(
+                temp_file.option_key,
+                file_path_to_option_string(&file_path)?,
+            );
+        }
+
+        Ok(MaterializedNativePaimonCatalogOptionSet {
+            options,
+            temp_dir: Some(temp_dir),
+        })
+    }
+}
+
+impl MaterializedNativePaimonCatalogOptionSet {
+    #[must_use]
+    pub fn temp_dir(&self) -> Option<&Path> {
+        self.temp_dir.as_deref()
+    }
+}
+
+impl Drop for MaterializedNativePaimonCatalogOptionSet {
+    fn drop(&mut self) {
+        if let Some(temp_dir) = self.temp_dir.take() {
+            if let Err(err) = fs::remove_dir_all(&temp_dir) {
+                tracing::warn!(
+                    temp_dir = %temp_dir.display(),
+                    error = %err,
+                    "failed to remove native Paimon temp directory"
+                );
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl PaimonEngineBackend for NativePaimonEngineBackend {
     async fn initialize_table(
@@ -494,6 +568,30 @@ fn require_storage_credential<'a>(
     })
 }
 
+fn sanitize_file_name(file_name_hint: &str) -> String {
+    let sanitized = file_name_hint
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "native-paimon-option.tmp".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn file_path_to_option_string(path: &Path) -> Result<String, PaimonEngineError> {
+    path.to_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| PaimonEngineError::cleanup_failed("temp file path is not valid UTF-8"))
+}
+
 fn s3_catalog_auth(auth: &NativePaimonS3Auth) -> NativePaimonCatalogAuth {
     match auth {
         NativePaimonS3Auth::AccessKey(credential) => NativePaimonCatalogAuth::S3AccessKey {
@@ -583,6 +681,8 @@ fn gcs_catalog_auth(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::{
         NativePaimonAdlsProfile, NativePaimonCatalogAuth, NativePaimonGcsAuth,
         NativePaimonRuntimeConfig, NativePaimonS3Auth, NativePaimonStorageConfig,
@@ -978,6 +1078,48 @@ mod tests {
                 .file_contents
                 .contains("\"project_id\":\"project-1\"")
         );
+    }
+
+    #[test]
+    fn materializes_temp_file_options_into_temp_dir() {
+        let warehouse_location: Location =
+            "gs://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let runtime = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::Gcs(GcsProfile {
+                bucket: "warehouse-bucket".to_string(),
+                key_prefix: Some("root".to_string()),
+                sts_enabled: true,
+                storage_layout: None,
+            }),
+            Some(&StorageCredential::Gcs(GcsCredential::ServiceAccountKey {
+                key: GcsServiceKey {
+                    r#type: "service_account".to_string(),
+                    project_id: "project-1".to_string(),
+                    private_key_id: "pk".to_string(),
+                    private_key: "secret".to_string(),
+                    client_email: "svc@example.com".to_string(),
+                    client_id: "123".to_string(),
+                    auth_uri: "https://accounts.google.com/o/oauth2/auth".to_string(),
+                    token_uri: "https://oauth2.googleapis.com/token".to_string(),
+                    auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs"
+                        .to_string(),
+                    client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/svc"
+                        .to_string(),
+                    universe_domain: "googleapis.com".to_string(),
+                },
+            })),
+        )
+        .unwrap();
+
+        let materialized = runtime.catalog_option_set().unwrap().materialize().unwrap();
+        let credential_path = materialized.options.get("gcs.credential-path").unwrap();
+        let temp_dir = materialized.temp_dir().unwrap().to_path_buf();
+        assert!(credential_path.starts_with(temp_dir.to_str().unwrap()));
+        let file_contents = fs::read_to_string(credential_path).unwrap();
+        assert!(file_contents.contains("\"project_id\":\"project-1\""));
+        drop(materialized);
+        assert!(!temp_dir.exists());
     }
 
     #[cfg(feature = "test-utils")]
