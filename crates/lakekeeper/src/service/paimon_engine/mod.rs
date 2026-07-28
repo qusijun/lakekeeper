@@ -7,10 +7,11 @@ mod native;
 mod unavailable;
 pub use default::{DefaultPaimonEngine, DynPaimonEngine, new_default_paimon_engine};
 pub use native::{
-    NativePaimonAdlsConfig, NativePaimonAdlsProfile, NativePaimonEngineBackend,
-    NativePaimonGcsAuth, NativePaimonGcsConfig, NativePaimonRuntimeConfig, NativePaimonS3Auth,
-    NativePaimonS3Config, NativePaimonStorageConfig, native_backend_error,
-    native_default_paimon_engine, native_paimon_engine,
+    NativePaimonAdlsConfig, NativePaimonAdlsProfile, NativePaimonCatalogAuth,
+    NativePaimonCatalogBootstrap, NativePaimonEngineBackend, NativePaimonGcsAuth,
+    NativePaimonGcsConfig, NativePaimonRuntimeConfig, NativePaimonS3Auth, NativePaimonS3Config,
+    NativePaimonStorageConfig, native_backend_error, native_default_paimon_engine,
+    native_paimon_engine,
 };
 pub use unavailable::{
     UnavailablePaimonEngine, UnavailablePaimonEngineBackend, unavailable_default_paimon_engine,

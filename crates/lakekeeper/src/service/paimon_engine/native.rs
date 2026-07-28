@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use url::Url;
@@ -31,6 +31,48 @@ const NATIVE_ENGINE_UNWIRED_DETAIL: &str =
 pub struct NativePaimonRuntimeConfig {
     pub warehouse_location: Location,
     pub storage: NativePaimonStorageConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePaimonCatalogBootstrap {
+    pub options: HashMap<String, String>,
+    pub auth: NativePaimonCatalogAuth,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativePaimonCatalogAuth {
+    None,
+    S3AccessKey {
+        access_key_id: String,
+        secret_access_key: String,
+    },
+    S3SystemIdentity {
+        external_id: Option<String>,
+    },
+    S3CloudflareR2 {
+        access_key_id: String,
+        secret_access_key: String,
+        token: String,
+        account_id: String,
+    },
+    AliyunOssAccessKey {
+        access_key_id: String,
+        secret_access_key: String,
+        external_id: Option<String>,
+    },
+    AzClientCredentials {
+        client_id: String,
+        tenant_id: String,
+        client_secret: String,
+    },
+    AzSharedAccessKey {
+        key: String,
+    },
+    AzSystemIdentity,
+    GcsServiceAccountKey {
+        service_account_json: String,
+    },
+    GcsSystemIdentity,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +160,32 @@ impl NativePaimonRuntimeConfig {
                 storage_credential,
             )?,
         })
+    }
+
+    pub fn catalog_bootstrap(&self) -> Result<NativePaimonCatalogBootstrap, PaimonEngineError> {
+        let mut options =
+            HashMap::from([("warehouse".to_string(), self.warehouse_location.to_string())]);
+        let auth = match &self.storage {
+            NativePaimonStorageConfig::S3(config) => {
+                options.insert("s3.region".to_string(), config.region.clone());
+                if let Some(endpoint) = &config.endpoint {
+                    options.insert("s3.endpoint".to_string(), endpoint.to_string());
+                }
+                if config.path_style_access {
+                    options.insert("s3.path.style.access".to_string(), "true".to_string());
+                }
+                s3_catalog_auth(&config.auth)
+            }
+            NativePaimonStorageConfig::Adls(config) => {
+                maybe_insert_adls_endpoint_option(&mut options, &config.profile);
+                adls_catalog_auth(&config.auth)
+            }
+            NativePaimonStorageConfig::Gcs(config) => gcs_catalog_auth(&config.auth)?,
+            #[cfg(feature = "test-utils")]
+            NativePaimonStorageConfig::Memory(_) => NativePaimonCatalogAuth::None,
+        };
+
+        Ok(NativePaimonCatalogBootstrap { options, auth })
     }
 }
 
@@ -329,11 +397,98 @@ fn require_storage_credential<'a>(
     })
 }
 
+fn s3_catalog_auth(auth: &NativePaimonS3Auth) -> NativePaimonCatalogAuth {
+    match auth {
+        NativePaimonS3Auth::AccessKey(credential) => NativePaimonCatalogAuth::S3AccessKey {
+            access_key_id: credential.access_key_id.clone(),
+            secret_access_key: credential.secret_access_key.clone(),
+        },
+        NativePaimonS3Auth::AwsSystemIdentity(credential) => {
+            NativePaimonCatalogAuth::S3SystemIdentity {
+                external_id: credential.external_id.clone(),
+            }
+        }
+        NativePaimonS3Auth::CloudflareR2(credential) => NativePaimonCatalogAuth::S3CloudflareR2 {
+            access_key_id: credential.access_key_id.clone(),
+            secret_access_key: credential.secret_access_key.clone(),
+            token: credential.token.clone(),
+            account_id: credential.account_id.clone(),
+        },
+        NativePaimonS3Auth::AliyunOss(credential) => NativePaimonCatalogAuth::AliyunOssAccessKey {
+            access_key_id: credential.access_key_id.clone(),
+            secret_access_key: credential.secret_access_key.clone(),
+            external_id: credential.external_id.clone(),
+        },
+    }
+}
+
+fn maybe_insert_adls_endpoint_option(
+    options: &mut HashMap<String, String>,
+    profile: &NativePaimonAdlsProfile,
+) {
+    match profile {
+        NativePaimonAdlsProfile::Generic(profile) => {
+            if let Some(host) = &profile.host {
+                options.insert(
+                    "azure.endpoint".to_string(),
+                    format!("https://{}.{host}", profile.account_name),
+                );
+            }
+        }
+        NativePaimonAdlsProfile::OneLake(profile) => {
+            options.insert(
+                "azure.endpoint".to_string(),
+                profile
+                    .base_location()
+                    .ok()
+                    .and_then(|location| location.host_str().map(|host| format!("https://{host}")))
+                    .unwrap_or_else(|| "https://onelake.dfs.fabric.microsoft.com".to_string()),
+            );
+        }
+    }
+}
+
+fn adls_catalog_auth(auth: &AzCredential) -> NativePaimonCatalogAuth {
+    match auth {
+        AzCredential::ClientCredentials {
+            client_id,
+            tenant_id,
+            client_secret,
+        } => NativePaimonCatalogAuth::AzClientCredentials {
+            client_id: client_id.clone(),
+            tenant_id: tenant_id.clone(),
+            client_secret: client_secret.clone(),
+        },
+        AzCredential::SharedAccessKey { key } => {
+            NativePaimonCatalogAuth::AzSharedAccessKey { key: key.clone() }
+        }
+        AzCredential::AzureSystemIdentity {} => NativePaimonCatalogAuth::AzSystemIdentity,
+    }
+}
+
+fn gcs_catalog_auth(
+    auth: &NativePaimonGcsAuth,
+) -> Result<NativePaimonCatalogAuth, PaimonEngineError> {
+    match auth {
+        NativePaimonGcsAuth::ServiceAccountKey(key) => {
+            let service_account_json = serde_json::to_string(key).map_err(|err| {
+                PaimonEngineError::validation(format!(
+                    "failed to serialize GCS service account key for native bootstrap: {err}"
+                ))
+            })?;
+            Ok(NativePaimonCatalogAuth::GcsServiceAccountKey {
+                service_account_json,
+            })
+        }
+        NativePaimonGcsAuth::GcpSystemIdentity => Ok(NativePaimonCatalogAuth::GcsSystemIdentity),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        NativePaimonAdlsProfile, NativePaimonGcsAuth, NativePaimonRuntimeConfig,
-        NativePaimonS3Auth, NativePaimonStorageConfig,
+        NativePaimonAdlsProfile, NativePaimonCatalogAuth, NativePaimonGcsAuth,
+        NativePaimonRuntimeConfig, NativePaimonS3Auth, NativePaimonStorageConfig,
     };
     use crate::service::{
         Location,
@@ -380,6 +535,38 @@ mod tests {
             }
             other => panic!("expected s3 config, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn builds_catalog_bootstrap_for_s3_warehouse() {
+        let warehouse_location: Location =
+            "s3://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let runtime = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::S3(s3_profile()),
+            Some(&StorageCredential::S3(S3Credential::AccessKey(
+                S3AccessKeyCredential {
+                    access_key_id: "access".to_string(),
+                    secret_access_key: "secret".to_string(),
+                    external_id: None,
+                },
+            ))),
+        )
+        .unwrap();
+
+        let bootstrap = runtime.catalog_bootstrap().unwrap();
+        assert_eq!(
+            bootstrap.options.get("warehouse"),
+            Some(&"s3://warehouse-bucket/root/warehouse-a".to_string())
+        );
+        assert_eq!(
+            bootstrap.options.get("s3.region"),
+            Some(&"us-east-1".to_string())
+        );
+        assert!(matches!(
+            bootstrap.auth,
+            NativePaimonCatalogAuth::S3AccessKey { .. }
+        ));
     }
 
     #[test]
@@ -453,6 +640,44 @@ mod tests {
     }
 
     #[test]
+    fn builds_catalog_bootstrap_for_adls_client_credentials() {
+        let warehouse_location: Location = "abfss://fs@account.custom.endpoint/root/warehouse-a"
+            .parse()
+            .unwrap();
+        let profile = StorageProfile::Adls(GenericAdlsProfile {
+            filesystem: "fs".to_string(),
+            key_prefix: Some("root".to_string()),
+            account_name: "account".to_string(),
+            authority_host: None,
+            host: Some("custom.endpoint".to_string()),
+            sas_token_validity_seconds: None,
+            allow_alternative_protocols: false,
+            sas_enabled: true,
+            storage_layout: None,
+        });
+        let runtime = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &profile,
+            Some(&StorageCredential::Az(AzCredential::ClientCredentials {
+                client_id: "client".to_string(),
+                tenant_id: "tenant".to_string(),
+                client_secret: "secret".to_string(),
+            })),
+        )
+        .unwrap();
+
+        let bootstrap = runtime.catalog_bootstrap().unwrap();
+        assert_eq!(
+            bootstrap.options.get("azure.endpoint"),
+            Some(&"https://account.custom.endpoint".to_string())
+        );
+        assert!(matches!(
+            bootstrap.auth,
+            NativePaimonCatalogAuth::AzClientCredentials { .. }
+        ));
+    }
+
+    #[test]
     fn builds_runtime_config_for_gcs_warehouse() {
         let warehouse_location: Location =
             "gs://warehouse-bucket/root/warehouse-a".parse().unwrap();
@@ -494,6 +719,53 @@ mod tests {
                 ));
             }
             other => panic!("expected gcs config, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn builds_catalog_bootstrap_for_gcs_warehouse() {
+        let warehouse_location: Location =
+            "gs://warehouse-bucket/root/warehouse-a".parse().unwrap();
+        let runtime = NativePaimonRuntimeConfig::from_warehouse(
+            &warehouse_location,
+            &StorageProfile::Gcs(GcsProfile {
+                bucket: "warehouse-bucket".to_string(),
+                key_prefix: Some("root".to_string()),
+                sts_enabled: true,
+                storage_layout: None,
+            }),
+            Some(&StorageCredential::Gcs(GcsCredential::ServiceAccountKey {
+                key: GcsServiceKey {
+                    r#type: "service_account".to_string(),
+                    project_id: "project-1".to_string(),
+                    private_key_id: "pk".to_string(),
+                    private_key: "secret".to_string(),
+                    client_email: "svc@example.com".to_string(),
+                    client_id: "123".to_string(),
+                    auth_uri: "https://accounts.google.com/o/oauth2/auth".to_string(),
+                    token_uri: "https://oauth2.googleapis.com/token".to_string(),
+                    auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs"
+                        .to_string(),
+                    client_x509_cert_url: "https://www.googleapis.com/robot/v1/metadata/x509/svc"
+                        .to_string(),
+                    universe_domain: "googleapis.com".to_string(),
+                },
+            })),
+        )
+        .unwrap();
+
+        let bootstrap = runtime.catalog_bootstrap().unwrap();
+        assert_eq!(
+            bootstrap.options.get("warehouse"),
+            Some(&"gs://warehouse-bucket/root/warehouse-a".to_string())
+        );
+        match bootstrap.auth {
+            NativePaimonCatalogAuth::GcsServiceAccountKey {
+                service_account_json,
+            } => {
+                assert!(service_account_json.contains("\"project_id\":\"project-1\""));
+            }
+            other => panic!("expected gcs service account auth, got {other:?}"),
         }
     }
 
