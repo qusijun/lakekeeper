@@ -8,7 +8,6 @@ use http::StatusCode;
 pub use iceberg::Error;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use valuable::Valuable;
 
 #[cfg(feature = "axum")]
 macro_rules! impl_into_response {
@@ -455,7 +454,7 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             if !skip_trace {
                 tracing::error!(
                     event_source = "error_response",
-                    error = tracing::field::valuable(&traced_error.as_value()),
+                    error = ?traced_error,
                     "Internal server error response"
                 );
             }
@@ -476,7 +475,7 @@ impl axum::response::IntoResponse for IcebergErrorResponse {
             if !skip_trace {
                 tracing::info!(
                     event_source = "error_response",
-                    error = tracing::field::valuable(&traced_error.as_value()),
+                    error = ?traced_error,
                     "Error response"
                 );
             }

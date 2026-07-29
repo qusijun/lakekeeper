@@ -11,29 +11,6 @@ use crate::service::{
     },
 };
 
-/// Newtype around `Vec<Authorization>` so we can implement `Valuable` /
-/// `Listable` for it without an orphan-rule violation. Borrowed because the
-/// audit emit path holds the Vec via `Arc`.
-struct AuthorizationsList<'a>(&'a [Authorization]);
-
-impl Valuable for AuthorizationsList<'_> {
-    fn as_value(&self) -> Value<'_> {
-        Value::Listable(self)
-    }
-
-    fn visit(&self, visit: &mut dyn Visit) {
-        for entry in self.0 {
-            visit.visit_value(entry.as_value());
-        }
-    }
-}
-
-impl Listable for AuthorizationsList<'_> {
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.0.len(), Some(self.0.len()))
-    }
-}
-
 impl Valuable for Authorization {
     fn as_value(&self) -> Value<'_> {
         Value::Mappable(self)
@@ -131,29 +108,29 @@ macro_rules! audit_log {
         match (__actions.len() == 1, __entities.entities.len() == 1) {
             (true, true) => tracing::info!(
                 event_source = "audit",
-                action = tracing::field::valuable(&__actions[0].as_value()),
-                entity = tracing::field::valuable(&__entities.entities[0].as_value()),
+                action = ?__actions[0],
+                entity = ?__entities.entities[0],
                 $($common)*
                 $msg
             ),
             (true, false) => tracing::info!(
                 event_source = "audit",
-                action = tracing::field::valuable(&__actions[0].as_value()),
-                entities = tracing::field::valuable(&__entities.as_value()),
+                action = ?__actions[0],
+                entities = ?__entities,
                 $($common)*
                 $msg
             ),
             (false, true) => tracing::info!(
                 event_source = "audit",
-                actions = tracing::field::valuable(&__actions.as_value()),
-                entity = tracing::field::valuable(&__entities.entities[0].as_value()),
+                actions = ?__actions,
+                entity = ?__entities.entities[0],
                 $($common)*
                 $msg
             ),
             (false, false) => tracing::info!(
                 event_source = "audit",
-                actions = tracing::field::valuable(&__actions.as_value()),
-                entities = tracing::field::valuable(&__entities.as_value()),
+                actions = ?__actions,
+                entities = ?__entities,
                 $($common)*
                 $msg
             ),
@@ -173,17 +150,16 @@ impl Display for AuditEventListener {
 #[async_trait::async_trait]
 impl EventListener for AuditEventListener {
     async fn authorization_failed(&self, event: AuthorizationFailedEvent) -> anyhow::Result<()> {
-        let authorizations = AuthorizationsList(&event.authorizations);
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
                 &*event.entities,
                 {
-                    actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    actor = ?event.request_metadata.internal_actor(),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
-                    failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
-                    error = tracing::field::valuable(&event.error.as_value()),
-                    authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    failure_reason = ?event.failure_reason,
+                    error = ?event.error,
+                    authorizations = ?event.authorizations,
                     decision = "denied",
                 },
                 "Authorization failed event"
@@ -193,12 +169,12 @@ impl EventListener for AuditEventListener {
                 &*event.actions,
                 &*event.entities,
                 {
-                    actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    actor = ?event.request_metadata.internal_actor(),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
-                    failure_reason = tracing::field::valuable(&event.failure_reason.as_value()),
-                    error = tracing::field::valuable(&event.error.as_value()),
-                    context = tracing::field::valuable(&event.extra_context.as_value()),
-                    authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    failure_reason = ?event.failure_reason,
+                    error = ?event.error,
+                    context = ?event.extra_context,
+                    authorizations = ?event.authorizations,
                     decision = "denied",
                 },
                 "Authorization failed event"
@@ -211,15 +187,14 @@ impl EventListener for AuditEventListener {
         &self,
         event: AuthorizationSucceededEvent,
     ) -> anyhow::Result<()> {
-        let authorizations = AuthorizationsList(&event.authorizations);
         if event.extra_context.is_empty() {
             audit_log!(
                 &*event.actions,
                 &*event.entities,
                 {
-                    actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    actor = ?event.request_metadata.internal_actor(),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
-                    authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    authorizations = ?event.authorizations,
                     decision = "allowed",
                 },
                 "Authorization succeeded event"
@@ -229,10 +204,10 @@ impl EventListener for AuditEventListener {
                 &*event.actions,
                 &*event.entities,
                 {
-                    actor = tracing::field::valuable(&event.request_metadata.internal_actor().as_value()),
+                    actor = ?event.request_metadata.internal_actor(),
                     privilege_source = event.request_metadata.privilege_source().as_str(),
-                    context = tracing::field::valuable(&event.extra_context.as_value()),
-                    authorizations = tracing::field::valuable(&authorizations.as_value()),
+                    context = ?event.extra_context,
+                    authorizations = ?event.authorizations,
                     decision = "allowed",
                 },
                 "Authorization succeeded event"
@@ -494,7 +469,7 @@ macro_rules! audit_operation {
         $crate::tracing::info!(
             event_source = "audit",
             operation = $op,
-            actor = $crate::tracing::field::valuable(&$actor),
+            actor = ?$actor,
             outcome = $outcome,
             $msg
         )
@@ -509,9 +484,9 @@ macro_rules! audit_operation {
         $crate::tracing::info!(
             event_source = "audit",
             operation = $op,
-            actor = $crate::tracing::field::valuable(&$actor),
+            actor = ?$actor,
             outcome = $outcome,
-            context = $crate::tracing::field::valuable(&$ctx),
+            context = ?$ctx,
             $msg
         )
     };
